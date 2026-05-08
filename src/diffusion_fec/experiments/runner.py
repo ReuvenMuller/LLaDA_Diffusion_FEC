@@ -61,6 +61,33 @@ class FakeDeterministicSmokeModel:
         self.target_tokens = target_tokens
         self.vocab_size = vocab_size
 
+    def propose_token(
+        self,
+        *,
+        position: int,
+        full_position: int,
+        candidate_token_ids: Sequence[int],
+        input_ids: Sequence[int],
+        step: int,
+    ) -> dict[str, float | int]:
+        if not candidate_token_ids:
+            raise RuntimeError("candidate_token_ids must be non-empty")
+        target_token_id = (
+            self.target_tokens[position]
+            if position < len(self.target_tokens)
+            else None
+        )
+        token_id = (
+            target_token_id
+            if target_token_id is not None and target_token_id in candidate_token_ids
+            else candidate_token_ids[0]
+        )
+        return {
+            "token_id": int(token_id),
+            "top1_probability": 1.0,
+            "top2_probability": 0.0,
+        }
+
     def forward(self, input_ids, attention_mask=None):
         sequence_length = len(input_ids[0])
         logits = [[[0.0 for _ in range(self.vocab_size)] for _ in range(sequence_length)]]

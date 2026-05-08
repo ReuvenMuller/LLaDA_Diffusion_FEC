@@ -133,6 +133,14 @@ model-vs-classical comparison. The frozen tokenized artifact keeps text samples,
 LLaDA token IDs, packetization, loss events, scoring, and overhead accounting on
 the same problem.
 
+Fake/model-free LLaDA-shaped validation uses a lightweight decoder proposal path
+when available, so it does not materialize full `sequence_length x vocab_size`
+logits for large LLaDA vocab artifacts. The decoder still builds the legal
+candidate set first, so fixed tokens remain fixed, hash-guided positions are
+restricted to their hash buckets, and unguided positions still exclude banned
+special tokens. This remains engineering validation only, not a research model
+baseline.
+
 ## Analysis Artifacts
 
 Build analysis artifacts for any directory containing run outputs:

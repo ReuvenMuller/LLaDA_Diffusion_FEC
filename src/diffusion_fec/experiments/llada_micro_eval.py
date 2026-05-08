@@ -708,6 +708,9 @@ def _result_row(
         "decode_latency_sec": case.decoding_result.decode_latency_sec,
         "decoder_steps": case.decoding_result.steps,
         "model_forward_calls": diagnostics.get("model_forward_calls"),
+        "model_proposal_calls": diagnostics.get("model_proposal_calls"),
+        "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode"),
+        "proposal_interface_used": diagnostics.get("proposal_interface_used"),
         **case.metrics.to_dict(),
     }
 

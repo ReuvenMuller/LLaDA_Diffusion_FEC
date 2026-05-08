@@ -37,6 +37,44 @@ class FakeMaskedDiffusionModel:
         return "|".join(str(token_id) for token_id in token_ids)
 
 
+class ProposalOnlyModel:
+    def __init__(self, target_tokens: tuple[int, ...]):
+        self.target_tokens = target_tokens
+        self.proposal_calls = []
+
+    def propose_token(
+        self,
+        *,
+        position,
+        full_position,
+        candidate_token_ids,
+        input_ids,
+        step,
+    ):
+        self.proposal_calls.append(
+            {
+                "position": position,
+                "full_position": full_position,
+                "candidate_count": len(candidate_token_ids),
+                "input_ids": tuple(input_ids),
+                "step": step,
+            }
+        )
+        target_token_id = self.target_tokens[position]
+        token_id = (
+            target_token_id
+            if target_token_id in candidate_token_ids
+            else candidate_token_ids[0]
+        )
+        return {"token_id": token_id, "top1_probability": 1.0, "top2_probability": 0.0}
+
+    def forward(self, input_ids, attention_mask=None):
+        raise AssertionError("proposal-only model should not materialize logits")
+
+    def decode(self, token_ids, skip_special_tokens=False):
+        return "|".join(str(token_id) for token_id in token_ids)
+
+
 def config() -> DiffusionDecodingConfig:
     return DiffusionDecodingConfig(
         mask_token_id=0,
@@ -250,3 +288,97 @@ def test_hash_guided_plan_requires_token_hash_map() -> None:
 
     with pytest.raises(ValueError, match="token_hash_map is required"):
         decode_masked_diffusion(model=model, plan=plan, config=config())
+
+
+def test_proposal_interface_uses_constraints_without_full_logits_for_huge_vocab() -> None:
+    huge_config = DiffusionDecodingConfig(
+        mask_token_id=0,
+        eos_token_id=1,
+        pad_token_id=2,
+        vocab_size=126464,
+        steps=2,
+        block_length=4,
+    )
+    plan = build_reconstruction_plan(
+        total_tokens=3,
+        received_packets=[
+            Packet(
+                source_id="sample-1",
+                wire_id=0,
+                kind="data",
+                token_ids=[1000],
+                token_positions=[0],
+            )
+        ],
+    )
+    model = ProposalOnlyModel(target_tokens=(99999, 12345, 45678))
+
+    result = decode_masked_diffusion(model=model, plan=plan, config=huge_config)
+
+    assert result.reconstructed_tokens == (1000, 12345, 45678)
+    assert result.confidence_stats[0].was_fixed is True
+    assert result.diagnostics["model_forward_calls"] == 0
+    assert result.diagnostics["model_proposal_calls"] == 3
+    assert result.diagnostics["decoder_proposal_mode"] == "model_propose_token"
+    assert result.diagnostics["proposal_interface_used"] is True
+    assert len(model.proposal_calls) == 3
+    assert all(call["candidate_count"] == huge_config.vocab_size - 3 for call in model.proposal_calls)
+
+
+def test_proposal_interface_cannot_escape_hash_bucket_candidates() -> None:
+    vocab_size = 126464
+    token_to_bucket = tuple(token_id % 16 for token_id in range(vocab_size))
+    bucket_to_token_ids = tuple(
+        tuple(
+            token_id
+            for token_id in range(bucket, vocab_size, 16)
+            if token_id not in {0, 1, 2}
+        )
+        for bucket in range(16)
+    )
+    token_hash = TokenHashMap(
+        hash_bits=4,
+        vocab_size=vocab_size,
+        token_to_bucket=token_to_bucket,
+        bucket_to_token_ids=bucket_to_token_ids,
+        excluded_token_ids={0, 1, 2},
+    )
+    hash_value = 7
+    nonmatching_target = 12344
+    assert nonmatching_target % 16 != hash_value
+    plan = build_reconstruction_plan(
+        total_tokens=1,
+        received_packets=[],
+        hash_metadata={0: hash_value},
+    )
+    model = ProposalOnlyModel(target_tokens=(nonmatching_target,))
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=vocab_size,
+            steps=1,
+            block_length=1,
+        ),
+        token_hash_map=token_hash,
+    )
+
+    assert result.reconstructed_tokens[0] in token_hash.candidate_token_ids(hash_value)
+    assert result.reconstructed_tokens[0] != nonmatching_target
+    assert result.diagnostics["model_forward_calls"] == 0
+    assert result.diagnostics["model_proposal_calls"] == 1
+
+
+def test_proposal_interface_unguided_positions_still_ban_special_tokens() -> None:
+    plan = build_reconstruction_plan(total_tokens=1, received_packets=[])
+    model = ProposalOnlyModel(target_tokens=(0,))
+
+    result = decode_masked_diffusion(model=model, plan=plan, config=config())
+
+    assert result.reconstructed_tokens == (3,)
+    assert result.diagnostics["model_forward_calls"] == 0
+    assert result.diagnostics["proposal_interface_used"] is True

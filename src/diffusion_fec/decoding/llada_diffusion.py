@@ -112,6 +112,13 @@ class _Proposal:
     used_fallback: bool
 
 
+@dataclass(frozen=True)
+class _ProposalChoice:
+    token_id: int
+    top1_probability: float = 1.0
+    top2_probability: float = 0.0
+
+
 def decode_masked_diffusion(
     *,
     model: object,
@@ -153,6 +160,9 @@ def decode_masked_diffusion(
     fallback_positions: set[int] = set()
     fallback_reasons: dict[int, str] = {}
     step_summaries = []
+    propose_token = getattr(model, "propose_token", None)
+    proposal_interface_available = callable(propose_token)
+    proposal_calls = 0
 
     if masks.editable_count == 0:
         reconstructed_tokens = tuple(x[prompt_length:])
@@ -170,6 +180,12 @@ def decode_masked_diffusion(
                 "config": config.to_dict(),
                 "prompt_token_count": prompt_length,
                 "model_forward_calls": 0,
+                "model_proposal_calls": 0,
+                "decoder_proposal_mode": (
+                    "model_propose_token" if proposal_interface_available else "logits"
+                ),
+                "proposal_interface_available": proposal_interface_available,
+                "proposal_interface_used": False,
                 "hash_bucket_empty_positions": [],
                 "fallback_positions": [],
                 "fallback_reasons": {},
@@ -189,26 +205,43 @@ def decode_masked_diffusion(
         if not editable_target_positions:
             break
 
-        logits = _extract_logits(
-            model.forward([list(x)], attention_mask=[list(attention_mask)]),
-            sequence_length=len(x),
-            vocab_size=config.vocab_size,
-        )
-        forward_calls += 1
         remaining_steps = config.steps - step
         transfer_count = max(1, ceil(len(editable_target_positions) / remaining_steps))
 
-        proposals = [
-            _proposal_for_position(
-                entry=plan.entries[target_position],
-                full_position=prompt_length + target_position,
-                position_logits=logits[prompt_length + target_position],
-                config=config,
-                token_hash_map=token_hash_map,
-                non_banned_token_ids=non_banned_token_ids,
+        if proposal_interface_available:
+            proposals = []
+            for target_position in editable_target_positions:
+                proposals.append(
+                    _proposal_from_model_hook(
+                        propose_token=propose_token,
+                        entry=plan.entries[target_position],
+                        full_position=prompt_length + target_position,
+                        input_ids=tuple(x),
+                        step=step,
+                        config=config,
+                        token_hash_map=token_hash_map,
+                        non_banned_token_ids=non_banned_token_ids,
+                    )
+                )
+                proposal_calls += 1
+        else:
+            logits = _extract_logits(
+                model.forward([list(x)], attention_mask=[list(attention_mask)]),
+                sequence_length=len(x),
+                vocab_size=config.vocab_size,
             )
-            for target_position in editable_target_positions
-        ]
+            forward_calls += 1
+            proposals = [
+                _proposal_for_position(
+                    entry=plan.entries[target_position],
+                    full_position=prompt_length + target_position,
+                    position_logits=logits[prompt_length + target_position],
+                    config=config,
+                    token_hash_map=token_hash_map,
+                    non_banned_token_ids=non_banned_token_ids,
+                )
+                for target_position in editable_target_positions
+            ]
         proposals.sort(
             key=lambda proposal: (
                 -proposal.top1_probability,
@@ -279,6 +312,12 @@ def decode_masked_diffusion(
             "config": config.to_dict(),
             "prompt_token_count": prompt_length,
             "model_forward_calls": forward_calls,
+            "model_proposal_calls": proposal_calls,
+            "decoder_proposal_mode": (
+                "model_propose_token" if proposal_interface_available else "logits"
+            ),
+            "proposal_interface_available": proposal_interface_available,
+            "proposal_interface_used": proposal_calls > 0,
             "hash_bucket_empty_positions": sorted(fallback_positions),
             "fallback_positions": sorted(fallback_positions),
             "fallback_reasons": dict(sorted(fallback_reasons.items())),
@@ -380,6 +419,67 @@ def _proposal_for_position(
         top2_probability=top2_probability,
         candidate_count=len(candidates),
         used_fallback=used_fallback,
+    )
+
+
+def _proposal_from_model_hook(
+    *,
+    propose_token,
+    entry: ReconstructionEntry,
+    full_position: int,
+    input_ids: tuple[int, ...],
+    step: int,
+    config: DiffusionDecodingConfig,
+    token_hash_map: TokenHashMap | None,
+    non_banned_token_ids: tuple[int, ...],
+) -> _Proposal:
+    candidates, used_fallback = _candidate_token_ids(
+        entry=entry,
+        config=config,
+        token_hash_map=token_hash_map,
+        non_banned_token_ids=non_banned_token_ids,
+    )
+    choice = _normalize_proposal_choice(
+        propose_token(
+            position=entry.position,
+            full_position=full_position,
+            candidate_token_ids=candidates,
+            input_ids=input_ids,
+            step=step,
+        )
+    )
+    if choice.token_id not in candidates:
+        raise ValueError("propose_token must return a token_id from candidate_token_ids")
+    return _Proposal(
+        full_position=full_position,
+        target_position=entry.position,
+        token_id=choice.token_id,
+        top1_probability=choice.top1_probability,
+        top2_probability=choice.top2_probability,
+        candidate_count=len(candidates),
+        used_fallback=used_fallback,
+    )
+
+
+def _normalize_proposal_choice(value: Any) -> _ProposalChoice:
+    if isinstance(value, int):
+        return _ProposalChoice(token_id=value)
+    if isinstance(value, dict):
+        token_id = value.get("token_id", value.get("selected_token_id"))
+        if token_id is None:
+            raise ValueError("propose_token dict result requires token_id")
+        return _ProposalChoice(
+            token_id=int(token_id),
+            top1_probability=float(value.get("top1_probability", 1.0)),
+            top2_probability=float(value.get("top2_probability", 0.0)),
+        )
+    token_id = getattr(value, "token_id", None)
+    if token_id is None:
+        raise TypeError("propose_token must return an int, dict, or object with token_id")
+    return _ProposalChoice(
+        token_id=int(token_id),
+        top1_probability=float(getattr(value, "top1_probability", 1.0)),
+        top2_probability=float(getattr(value, "top2_probability", 0.0)),
     )
 
 

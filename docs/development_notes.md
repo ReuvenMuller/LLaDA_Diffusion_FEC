@@ -313,6 +313,12 @@ against the current LLaDA tokenizer before loading model weights. The older
 `--dataset-file` fake path remains available for quick local plumbing checks,
 but it uses a deterministic local tokenizer and is not a fair comparison basis.
 
+The fake/model-free decoder path is optimized for large LLaDA-tokenized
+artifacts. Fake models can implement `propose_token(...)`, and the decoder will
+ask that hook to choose from the already-constrained candidate set instead of
+materializing full-vocabulary logits. Real LLaDA still uses the normal
+`forward(...).logits` path.
+
 Result CSVs can be aggregated with:
 
 ```python

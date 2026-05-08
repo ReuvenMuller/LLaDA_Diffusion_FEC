@@ -227,6 +227,65 @@ def test_synthetic_sweep_cli_uses_pretokenized_samples(tmp_path) -> None:
     assert child_rows[0]["source_token_count"] == "4"
 
 
+def test_synthetic_sweep_uses_lightweight_fake_proposals_for_large_vocab_artifact(tmp_path) -> None:
+    dataset_path = tmp_path / "genfec_messages.json"
+    dataset_path.write_text(
+        json.dumps([{"id": "wiki_0", "original_message": "abcd"}]),
+        encoding="utf-8",
+    )
+    tokenized_path = tmp_path / "llada_tokenized.json"
+    write_tokenized_sample_artifact(
+        dataset_path=dataset_path,
+        output_path=tokenized_path,
+        tokenize=lambda text: [1000, 126000, 12345, 45678],
+        tokenizer_name="fake-llada",
+        model_id="fake-llada",
+        vocab_size=126464,
+        sample_count=1,
+        seed=0,
+        max_tokens=4,
+        dataset_label="test_llada_tokenized",
+    )
+    output_dir = tmp_path / "large_vocab_sweep"
+
+    exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--synthetic-sweep",
+            "--tokenized-samples-file",
+            str(tokenized_path),
+            "--tokens-per-packet",
+            "2",
+            "--loss-rate",
+            "1.0",
+            "--sweep-runners",
+            SWEEP_RUNNER_MODEL_ONLY,
+        ]
+    )
+
+    rows = read_csv(output_dir / "sweep_runs.csv")
+    child_rows = read_csv(output_dir / rows[0]["results"])
+    child_manifest = read_json(output_dir / rows[0]["output_dir"] / "run_manifest.json")
+    child_events = [
+        json.loads(line)
+        for line in (output_dir / rows[0]["events"]).read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    diagnostics = child_events[0]["case"]["decoding_result"]["diagnostics"]
+
+    assert exit_code == 0
+    assert child_manifest["config"]["vocab_size"] == 126464
+    assert child_rows[0]["source_token_count"] == "4"
+    assert child_rows[0]["model_forward_calls"] == "0"
+    assert child_rows[0]["model_proposal_calls"] == "10"
+    assert child_rows[0]["decoder_proposal_mode"] == "model_propose_token"
+    assert child_rows[0]["proposal_interface_used"] == "True"
+    assert diagnostics["model_forward_calls"] == 0
+    assert diagnostics["model_proposal_calls"] == 10
+    assert diagnostics["proposal_interface_used"] is True
+
+
 def test_synthetic_sweep_reruns_stale_dataset_child_when_selection_changes(tmp_path) -> None:
     dataset_path = tmp_path / "genfec_messages.json"
     dataset_path.write_text(
