@@ -75,6 +75,22 @@ class ProposalOnlyModel:
         return "|".join(str(token_id) for token_id in token_ids)
 
 
+class TorchLogitsModel:
+    def __init__(self, vocab_size: int, preferred_token_id: int):
+        self.vocab_size = vocab_size
+        self.preferred_token_id = preferred_token_id
+
+    def forward(self, input_ids, attention_mask=None):
+        torch = pytest.importorskip("torch")
+        sequence_length = len(input_ids[0])
+        logits = torch.zeros((1, sequence_length, self.vocab_size), dtype=torch.float32)
+        logits[0, 0, self.preferred_token_id] = 100.0
+        return FakeForwardOutput(logits=logits)
+
+    def decode(self, token_ids, skip_special_tokens=False):
+        return "|".join(str(token_id) for token_id in token_ids)
+
+
 def config() -> DiffusionDecodingConfig:
     return DiffusionDecodingConfig(
         mask_token_id=0,
@@ -194,6 +210,34 @@ def test_unguided_positions_ban_special_tokens_but_allow_normal_tokens() -> None
     result = decode_masked_diffusion(model=model, plan=plan, config=config())
 
     assert result.reconstructed_tokens == (8,)
+
+
+def test_tensor_logits_select_from_large_vocab_without_python_logits_lists() -> None:
+    pytest.importorskip("torch")
+    vocab_size = 50000
+    preferred_token_id = vocab_size - 1
+    plan = build_reconstruction_plan(total_tokens=1, received_packets=[])
+    model = TorchLogitsModel(
+        vocab_size=vocab_size,
+        preferred_token_id=preferred_token_id,
+    )
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=vocab_size,
+            steps=1,
+            block_length=1,
+        ),
+    )
+
+    assert result.reconstructed_tokens == (preferred_token_id,)
+    assert result.diagnostics["decoder_proposal_mode"] == "logits"
+    assert result.diagnostics["model_forward_calls"] == 1
 
 
 def test_prompt_tokens_are_fixed_prefix_but_not_returned_as_target_tokens() -> None:

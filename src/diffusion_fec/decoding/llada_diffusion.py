@@ -516,6 +516,13 @@ def _select_argmax_with_confidence(
     if not candidate_token_ids:
         raise RuntimeError("cannot select from an empty candidate set")
 
+    tensor_result = _select_argmax_with_confidence_tensor(
+        position_logits,
+        candidate_token_ids,
+    )
+    if tensor_result is not None:
+        return tensor_result
+
     best_token_id = candidate_token_ids[0]
     best_logit = float(position_logits[best_token_id])
     second_logit: float | None = None
@@ -539,6 +546,56 @@ def _select_argmax_with_confidence(
         second_probability = 0.0
     else:
         second_probability = exp(second_logit - max_logit) / denominator
+    return best_token_id, best_probability, second_probability
+
+
+def _select_argmax_with_confidence_tensor(
+    position_logits: Sequence[float],
+    candidate_token_ids: tuple[int, ...],
+) -> tuple[int, float, float] | None:
+    """Use vectorized tensor selection for real full-vocabulary logits."""
+
+    detach = getattr(position_logits, "detach", None)
+    index_select = getattr(position_logits, "index_select", None)
+    if not callable(detach) or not callable(index_select):
+        return None
+
+    try:
+        import torch
+    except ImportError:
+        return None
+
+    logits_tensor = detach()
+    if getattr(logits_tensor, "ndim", None) != 1:
+        return None
+
+    candidate_tensor = torch.tensor(
+        candidate_token_ids,
+        dtype=torch.long,
+        device=logits_tensor.device,
+    )
+    candidate_logits = logits_tensor.index_select(0, candidate_tensor).float()
+    if candidate_logits.numel() != len(candidate_token_ids):
+        return None
+
+    max_logit = candidate_logits.max()
+    best_local_index = int(
+        torch.nonzero(candidate_logits == max_logit, as_tuple=False)[0].item()
+    )
+    best_token_id = int(candidate_tensor[best_local_index].item())
+
+    exp_values = torch.exp(candidate_logits - max_logit)
+    denominator = float(exp_values.sum().item())
+    best_probability = float(exp_values[best_local_index].item()) / denominator
+
+    if candidate_logits.numel() == 1:
+        second_probability = 0.0
+    else:
+        second_logits = candidate_logits.clone()
+        second_logits[best_local_index] = -float("inf")
+        second_logit = second_logits.max()
+        second_probability = float(torch.exp(second_logit - max_logit).item()) / denominator
+
     return best_token_id, best_probability, second_probability
 
 
