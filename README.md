@@ -49,6 +49,7 @@ See [docs/reference_sources.md](docs/reference_sources.md) for model and code re
 - [Experiment plan](docs/experiment_plan.md)
 - [Development notes](docs/development_notes.md)
 - [Reference sources](docs/reference_sources.md)
+- [Server SSH workflow](docs/server_ssh_workflow.md)
 - [Agent handoff](docs/AGENT_HANDOFF.md)
 
 ## Planned Package Shape
