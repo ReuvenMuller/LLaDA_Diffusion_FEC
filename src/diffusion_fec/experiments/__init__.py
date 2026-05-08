@@ -1,5 +1,6 @@
 """Small experiment orchestration helpers."""
 
+from diffusion_fec.experiments.classical_micro_eval import run_xor_parity_micro_eval
 from diffusion_fec.experiments.micro_eval import (
     MICRO_EVAL_MODEL_HASH,
     MICRO_EVAL_MODEL_ONLY,
@@ -19,4 +20,5 @@ __all__ = [
     "run_real_llada_micro_eval",
     "run_synthetic_micro_eval",
     "run_smoke_recovery_case",
+    "run_xor_parity_micro_eval",
 ]

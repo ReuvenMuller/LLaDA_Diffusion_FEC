@@ -29,11 +29,11 @@ Done:
   and model+hash modes
 - classical overhead accounting helpers
 - XOR parity baseline codec with source-layout and wire-interleaving support
+- XOR parity synthetic micro-eval runner with manifest/results/events artifacts
 
 Not done:
 
 - real text dataset sampling
-- XOR baseline artifact runner
 - LT/fountain matched-overhead baseline
 - streaming-window matched-overhead baseline
 - larger server sweeps
@@ -165,8 +165,8 @@ Reimplement, in this codebase:
 Baseline outputs must use the same artifact interface as LLaDA runs. Baseline
 code should not live in decoder modules.
 
-Status: overhead accounting and the XOR parity codec are implemented and tested.
-XOR artifact writing is the next baseline step.
+Status: overhead accounting, the XOR parity codec, and XOR artifact-writing
+micro-evals are implemented and tested.
 
 ### Phase 6: Datasets, Sweeps, And Analysis
 
@@ -184,12 +184,12 @@ Freeze configs and hash profiles before final research runs.
 
 ## Immediate Next Phase
 
-Begin Phase 5:
+Continue Phase 5:
 
-- start classical matched-overhead baseline implementation with isolated modules
-- add overhead accounting shared by LLaDA hash modes and classical baselines
-- wire XOR parity into `run_manifest.json`, `results.csv`, and `events.jsonl`
-- keep LT/fountain and streaming-window baselines in separate follow-up slices
+- implement LT/fountain matched-overhead baseline in isolated baseline modules
+- add an LT/fountain synthetic micro-eval runner path
+- then implement streaming-window matched-overhead baseline
+- keep all baseline outputs on the same manifest/results/events interface
 
 Acceptance:
 

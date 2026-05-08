@@ -207,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run fake deterministic smoke artifacts.")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--micro-eval", action="store_true")
+    parser.add_argument("--xor-parity-micro-eval", action="store_true")
     parser.add_argument("--real-llada-smoke", action="store_true")
     parser.add_argument("--real-llada-micro-eval", action="store_true")
     parser.add_argument("--llada-model-id", default="GSAI-ML/LLaDA-1.5")
@@ -262,15 +263,21 @@ def main(argv: list[str] | None = None) -> int:
         default=GE_STATE_GOOD,
         choices=[GE_STATE_GOOD, GE_STATE_BAD],
     )
+    parser.add_argument("--xor-stripe-size", type=int, default=4)
+    parser.add_argument("--xor-stripe-stride", type=int)
     args = parser.parse_args(argv)
 
     selected_runners = [
         args.micro_eval,
+        args.xor_parity_micro_eval,
         args.real_llada_smoke,
         args.real_llada_micro_eval,
     ]
     if sum(1 for selected in selected_runners if selected) > 1:
-        parser.error("--micro-eval, --real-llada-smoke, and --real-llada-micro-eval are separate runners")
+        parser.error(
+            "--micro-eval, --xor-parity-micro-eval, --real-llada-smoke, "
+            "and --real-llada-micro-eval are separate runners"
+        )
 
     if args.micro_eval:
         run_synthetic_micro_eval(
@@ -293,6 +300,28 @@ def main(argv: list[str] | None = None) -> int:
             build_hash_profile=args.build_hash_profile,
             hash_map_mode=args.hash_map_mode,
             hash_profile_name=args.hash_profile_name or "fake_micro_eval_v1",
+        )
+        return 0
+
+    if args.xor_parity_micro_eval:
+        from diffusion_fec.experiments.classical_micro_eval import run_xor_parity_micro_eval
+
+        run_xor_parity_micro_eval(
+            output_dir=args.output_dir,
+            sample_lengths=_parse_sample_lengths(
+                args.sample_lengths,
+                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+            ),
+            loss_rate=args.loss_rate,
+            seed=args.seed,
+            tokens_per_packet=args.tokens_per_packet,
+            hash_bits=args.hash_bits,
+            vocab_size=args.vocab_size,
+            source_layout=_source_layout_from_args(args),
+            wire_interleaving=_wire_interleaving_from_args(args),
+            channel_config=_channel_config_from_args(args),
+            data_packets_per_stripe=args.xor_stripe_size,
+            stripe_stride=args.xor_stripe_stride,
         )
         return 0
 

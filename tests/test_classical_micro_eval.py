@@ -1,0 +1,136 @@
+import csv
+import json
+
+from diffusion_fec.channels.packet_loss import CHANNEL_BURST, PacketLossChannelConfig
+from diffusion_fec.experiments.classical_micro_eval import run_xor_parity_micro_eval
+from diffusion_fec.experiments.runner import main
+
+
+def read_json(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_jsonl(path):
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+
+
+def read_csv(path):
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_xor_parity_micro_eval_writes_artifacts_and_repairs_single_loss(tmp_path) -> None:
+    output_dir = tmp_path / "xor"
+
+    run_xor_parity_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=2,
+        hash_bits=4,
+        vocab_size=128,
+        data_packets_per_stripe=2,
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=1,
+        ),
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    rows = read_csv(output_dir / "results.csv")
+    events = read_jsonl(output_dir / "events.jsonl")
+
+    assert manifest["runner"] == "xor_parity_synthetic_micro_eval"
+    assert manifest["baseline_family"] == "xor_parity"
+    assert manifest["config"]["xor_parity"]["data_packets_per_stripe"] == 2
+    assert rows[0]["strategy"] == "Classical_XORParity_MatchedHash4"
+    assert rows[0]["baseline_family"] == "xor_parity"
+    assert rows[0]["known_count"] == "8"
+    assert rows[0]["unguided_count"] == "0"
+    assert rows[0]["exact_match"] == "True"
+    assert rows[0]["repair_packet_count"] == "2"
+    assert rows[0]["repair_token_budget"] == "4"
+    assert rows[0]["target_overhead_ratio"] == str(4 / 7)
+    assert events[0]["event_type"] == "xor_parity_micro_eval_case"
+    assert events[0]["metrics"]["exact_match"] is True
+
+
+def test_xor_parity_micro_eval_leaves_unrepaired_multi_loss_unguided(tmp_path) -> None:
+    output_dir = tmp_path / "xor_multi_loss"
+
+    run_xor_parity_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=2,
+        hash_bits=4,
+        vocab_size=128,
+        data_packets_per_stripe=2,
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=2,
+        ),
+    )
+
+    rows = read_csv(output_dir / "results.csv")
+    events = read_jsonl(output_dir / "events.jsonl")
+
+    assert rows[0]["known_count"] == "4"
+    assert rows[0]["unguided_count"] == "4"
+    assert rows[0]["exact_match"] == "False"
+    assert events[0]["metrics"]["remaining_mask_token_count"] == 4
+
+
+def test_xor_parity_micro_eval_output_is_deterministic(tmp_path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+
+    run_xor_parity_micro_eval(
+        output_dir=first_dir,
+        sample_lengths=(8, 16),
+        seed=5,
+        tokens_per_packet=2,
+        data_packets_per_stripe=2,
+    )
+    run_xor_parity_micro_eval(
+        output_dir=second_dir,
+        sample_lengths=(8, 16),
+        seed=5,
+        tokens_per_packet=2,
+        data_packets_per_stripe=2,
+    )
+
+    for filename in ("run_manifest.json", "results.csv", "events.jsonl"):
+        assert (first_dir / filename).read_text(encoding="utf-8") == (
+            second_dir / filename
+        ).read_text(encoding="utf-8")
+
+
+def test_xor_parity_cli_entrypoint_writes_artifacts(tmp_path) -> None:
+    output_dir = tmp_path / "cli"
+
+    exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--xor-parity-micro-eval",
+            "--sample-lengths",
+            "8",
+            "--tokens-per-packet",
+            "2",
+            "--xor-stripe-size",
+            "2",
+            "--channel",
+            CHANNEL_BURST,
+            "--burst-length",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert read_json(output_dir / "run_manifest.json")["baseline_family"] == "xor_parity"
+    assert read_csv(output_dir / "results.csv")[0]["protection_mode"] == "xor_parity"

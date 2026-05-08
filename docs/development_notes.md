@@ -206,10 +206,23 @@ It includes:
 - XOR repair when exactly one source packet in a stripe is missing,
 - support for source/token layout and packet-level wire interleaving.
 
-The baseline code is intentionally separate from LLaDA decoder modules. The next
-step is an artifact-writing XOR micro-eval runner that uses the same
+The baseline code is intentionally separate from LLaDA decoder modules. XOR
+parity now has an artifact-writing micro-eval runner that uses the same
 `run_manifest.json`, `results.csv`, and `events.jsonl` convention as the fake and
-real LLaDA runners.
+real LLaDA runners:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\xor_parity_micro_eval `
+  --xor-parity-micro-eval `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --hash-bits 4 `
+  --xor-stripe-size 4
+```
+
+Use the same `--source-layout`, `--wire-interleaving`, and `--channel` flags as
+the fake LLaDA micro-eval runner.
 
 Current opt-in pytest smoke:
 
