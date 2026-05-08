@@ -19,7 +19,7 @@ analysis/reports/
 # Model/cache directories
 .cache/
 hf_cache/
-models/
+/models/
 
 # OS/editor
 .DS_Store
