@@ -50,6 +50,27 @@ def run_real_llada_smoke(
         "vocab_size": tokenizer_adapter.vocab_size,
         "max_sequence_length": tokenizer_adapter.max_sequence_length,
     }
+    profile_name = hash_profile_name or _default_hash_profile_name(model_id)
+    token_hash_map, hash_profile_info = load_or_build_hash_profile(
+        profile_dir=hash_profile_dir,
+        profile_name=profile_name,
+        vocab_size=tokenizer_adapter.vocab_size,
+        hash_bits=hash_bits,
+        decode_token=tokenizer_adapter,
+        excluded_token_ids={
+            tokenizer_adapter.mask_token_id,
+            *(
+                token_id
+                for token_id in (tokenizer_adapter.eos_token_id, tokenizer_adapter.pad_token_id)
+                if token_id is not None
+            ),
+        },
+        salt=f"{model_id}|real-llada-smoke",
+        map_mode=hash_map_mode,
+        model_id=model_id,
+        tokenizer_name=model_id,
+        build_if_missing=build_hash_profile,
+    )
 
     if not torch.cuda.is_available() and not allow_cpu:
         raise RealLLaDASmokeUnavailable(
@@ -66,23 +87,6 @@ def run_real_llada_smoke(
     forward_shape = _run_tiny_forward(adapter)
     sample = _tiny_token_sample(adapter)
     config = adapter.decoding_config(steps=steps, block_length=tokens_per_packet)
-    profile_name = hash_profile_name or _default_hash_profile_name(model_id)
-    token_hash_map, hash_profile_info = load_or_build_hash_profile(
-        profile_dir=hash_profile_dir,
-        profile_name=profile_name,
-        vocab_size=adapter.vocab_size,
-        hash_bits=hash_bits,
-        decode_token=adapter,
-        excluded_token_ids={
-            adapter.mask_token_id,
-            *(token_id for token_id in (adapter.eos_token_id, adapter.pad_token_id) if token_id is not None),
-        },
-        salt=f"{model_id}|real-llada-smoke",
-        map_mode=hash_map_mode,
-        model_id=model_id,
-        tokenizer_name=model_id,
-        build_if_missing=build_hash_profile,
-    )
     case = run_smoke_recovery_case(
         sample=sample,
         model=adapter,
