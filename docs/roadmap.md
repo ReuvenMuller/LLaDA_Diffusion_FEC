@@ -27,11 +27,15 @@ Done:
 - runner-integrated packet-loss channels: IID, burst, and Gilbert-Elliott
 - profile-backed real LLaDA micro-eval executed on the GPU server for model-only
   and model+hash modes
+- classical overhead accounting helpers
+- XOR parity baseline codec with source-layout and wire-interleaving support
 
 Not done:
 
 - real text dataset sampling
-- classical matched-overhead baselines
+- XOR baseline artifact runner
+- LT/fountain matched-overhead baseline
+- streaming-window matched-overhead baseline
 - larger server sweeps
 - aggregation, plots, and final report tables
 
@@ -161,6 +165,9 @@ Reimplement, in this codebase:
 Baseline outputs must use the same artifact interface as LLaDA runs. Baseline
 code should not live in decoder modules.
 
+Status: overhead accounting and the XOR parity codec are implemented and tested.
+XOR artifact writing is the next baseline step.
+
 ### Phase 6: Datasets, Sweeps, And Analysis
 
 Add:
@@ -181,7 +188,7 @@ Begin Phase 5:
 
 - start classical matched-overhead baseline implementation with isolated modules
 - add overhead accounting shared by LLaDA hash modes and classical baselines
-- implement XOR parity first as the smallest matched-overhead baseline
+- wire XOR parity into `run_manifest.json`, `results.csv`, and `events.jsonl`
 - keep LT/fountain and streaming-window baselines in separate follow-up slices
 
 Acceptance:

@@ -195,6 +195,22 @@ Real micro-eval hash mode requires an existing profile and will not build one
 while loading/running LLaDA. Use `--micro-eval-mode model_only` for a model-only
 comparison path with no hash profile.
 
+## Classical Baseline Notes
+
+The first classical baseline slice is implemented in `src/diffusion_fec/baselines`.
+It includes:
+
+- token bit-width and hash-overhead estimation,
+- repair-token overhead accounting,
+- XOR parity encoding over source packet stripes,
+- XOR repair when exactly one source packet in a stripe is missing,
+- support for source/token layout and packet-level wire interleaving.
+
+The baseline code is intentionally separate from LLaDA decoder modules. The next
+step is an artifact-writing XOR micro-eval runner that uses the same
+`run_manifest.json`, `results.csv`, and `events.jsonl` convention as the fake and
+real LLaDA runners.
+
 Current opt-in pytest smoke:
 
 ```powershell
