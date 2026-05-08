@@ -50,18 +50,22 @@ class LLaDAAdapter:
         config_options = {"trust_remote_code": True}
         config_options.update(config_kwargs or {})
         config = AutoConfig.from_pretrained(model_id, **config_options)
+        _ensure_llada_config_defaults(config)
         tokenizer_options = {"trust_remote_code": True}
         tokenizer_options.update(tokenizer_kwargs or {})
         tokenizer = AutoTokenizer.from_pretrained(model_id, **tokenizer_options)
 
         model = None
+        model_config = config
         if load_model:
             load_options = {"trust_remote_code": True}
             load_options.update(_default_model_kwargs())
             load_options["config"] = config
             load_options.update(model_kwargs or {})
+            model_config = load_options.get("config", config)
+            _ensure_llada_config_defaults(model_config)
             _patch_remote_llada_model_class(
-                config=config,
+                config=model_config,
                 model_id=model_id,
                 local_files_only=bool(load_options.get("local_files_only", False)),
             )
@@ -74,7 +78,7 @@ class LLaDAAdapter:
             tokenizer=tokenizer,
             model=model,
             model_id=model_id,
-            model_config=config,
+            model_config=model_config,
         )
 
     @property
@@ -267,6 +271,11 @@ def _patch_remote_llada_model_class(
 
     tie_weights_compat._diffusion_fec_compat_wrapper = True
     model_class.tie_weights = tie_weights_compat
+
+
+def _ensure_llada_config_defaults(config: Any) -> None:
+    if config is not None and not hasattr(config, "use_cache"):
+        config.use_cache = False
 
 
 def _accepts_transformers_tie_kwargs(tie_weights: Any) -> bool:
