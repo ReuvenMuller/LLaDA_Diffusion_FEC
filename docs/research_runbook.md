@@ -1,0 +1,181 @@
+# Research Runbook
+
+This runbook is the operational handoff for the current framework. It separates
+local correctness, small synthetic sweeps, opt-in real LLaDA micro-evals, and
+final research runs.
+
+## Status
+
+The framework code path is complete enough to run the intended comparison:
+
+- LLaDA model only
+- LLaDA plus transmitted lookback-1 token hashes
+- classical matched-overhead baselines:
+  - XOR parity
+  - LT/fountain-style repair
+  - streaming-window repair
+
+The current smoke and micro-eval outputs are still engineering validation. They
+must not be described as research results until configs, profiles, datasets, and
+sample counts are frozen and run on the server.
+
+## Local Acceptance
+
+Run the default test suite locally:
+
+```powershell
+python -m pytest
+```
+
+The default suite is model-free and should not load Hugging Face or LLaDA.
+
+## Local Synthetic Sweep
+
+Run a compact model-free sweep across the main comparison set:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\synthetic_sweep `
+  --synthetic-sweep `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --loss-rate 0.5 `
+  --hash-bits 4 `
+  --seed 0
+```
+
+Include burst loss and both interleaving families:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\synthetic_sweep_interleaving `
+  --synthetic-sweep `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --loss-rate 0.5 `
+  --hash-bits 4 `
+  --seed 0 `
+  --sweep-include-burst `
+  --sweep-include-interleaving-variants `
+  --burst-length 2
+```
+
+The sweep writes:
+
+```text
+runs/<sweep>/
+  sweep_manifest.json
+  sweep_runs.csv
+  runs/<child-run>/run_manifest.json
+  runs/<child-run>/results.csv
+  runs/<child-run>/events.jsonl
+  hash_profiles/<fake-profile>/
+  analysis/analysis_manifest.json
+  analysis/aggregate.csv
+  analysis/summary.md
+  analysis/*.svg
+  analysis/failure_examples.jsonl
+```
+
+The sweep is skip-aware by default. Add `--sweep-overwrite` to rerun completed
+child runs.
+
+## Analysis Artifacts
+
+Build analysis artifacts for any directory containing run outputs:
+
+```powershell
+python -m diffusion_fec.analysis.report `
+  --run-root runs\synthetic_sweep\runs `
+  --output-dir runs\synthetic_sweep\analysis
+```
+
+The analysis writer discovers `results.csv` and `events.jsonl`, then writes:
+
+- `aggregate.csv`
+- `summary.md`
+- `exact_match_rate.svg`
+- `lost_position_recovery_rate.svg`
+- `decode_latency_sec.svg`
+- `repair_overhead_ratio.svg`
+- `failure_examples.jsonl`
+- `analysis_manifest.json`
+
+## Frozen Real-Run Conventions
+
+Real LLaDA runs must use loaded tokenizer-specific hash profiles. Do not rebuild
+hash maps during real model execution.
+
+Recommended profile convention:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/hash_profiles/
+  llada_1_5_real_v1/
+    hash_profile_metadata.json
+    uniform_hash4_map.npy
+    uniform_hash8_map.npy
+    uniform_hash16_map.npy
+```
+
+Recommended run root:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/
+```
+
+Every real run should record:
+
+- model ID and cache/local-files setting
+- hash profile directory and map mode
+- hash bits
+- source layout and packet wire interleaving
+- channel mode and channel parameters
+- sample lengths or dataset sample IDs
+- decoder steps
+- latency and model forward calls
+
+## Server Real LLaDA Micro-Evals
+
+Use `tmux` on the GPU server. Example model-only command:
+
+```bash
+python -m diffusion_fec.experiments.runner \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_model_only_micro_eval \
+  --real-llada-micro-eval \
+  --micro-eval-mode model_only \
+  --llada-local-files-only \
+  --sample-lengths 8 \
+  --tokens-per-packet 1 \
+  --hash-bits 4 \
+  --steps 2 \
+  --seed 0
+```
+
+Example model+hash command:
+
+```bash
+python -m diffusion_fec.experiments.runner \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_hash4_micro_eval \
+  --real-llada-micro-eval \
+  --hash-profile-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/hash_profiles/llada_1_5_real_v1 \
+  --llada-local-files-only \
+  --sample-lengths 8 \
+  --tokens-per-packet 1 \
+  --hash-bits 4 \
+  --steps 2 \
+  --seed 0
+```
+
+Run the analysis writer over the server run root after a group of runs finishes.
+
+## Final Experiment Gate
+
+Before final research claims:
+
+- freeze dataset sampling and sample IDs,
+- freeze LLaDA cache/model revision,
+- freeze hash profiles for 4, 8, and 16 bits,
+- freeze packet size, interleaving, and channel configs,
+- run model-only, model+hash, and classical baselines under matched overhead,
+- aggregate all runs through the same analysis artifact path,
+- inspect failure examples before drawing conclusions.

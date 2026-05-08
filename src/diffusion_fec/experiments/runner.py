@@ -210,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--xor-parity-micro-eval", action="store_true")
     parser.add_argument("--lt-fountain-micro-eval", action="store_true")
     parser.add_argument("--streaming-window-micro-eval", action="store_true")
+    parser.add_argument("--synthetic-sweep", action="store_true")
     parser.add_argument("--real-llada-smoke", action="store_true")
     parser.add_argument("--real-llada-micro-eval", action="store_true")
     parser.add_argument("--llada-model-id", default="GSAI-ML/LLaDA-1.5")
@@ -272,6 +273,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lt-coverage-aware", action="store_true")
     parser.add_argument("--stream-window-size", type=int, default=5)
     parser.add_argument("--stream-window-stride", type=int, default=1)
+    parser.add_argument(
+        "--sweep-loss-rates",
+        default=None,
+        help="Comma-separated loss rates for --synthetic-sweep.",
+    )
+    parser.add_argument(
+        "--sweep-runners",
+        default=None,
+        help="Comma-separated synthetic sweep runners. Defaults to the main comparison set.",
+    )
+    parser.add_argument("--sweep-include-interleaving-variants", action="store_true")
+    parser.add_argument("--sweep-include-burst", action="store_true")
+    parser.add_argument("--sweep-overwrite", action="store_true")
     args = parser.parse_args(argv)
 
     selected_runners = [
@@ -279,15 +293,65 @@ def main(argv: list[str] | None = None) -> int:
         args.xor_parity_micro_eval,
         args.lt_fountain_micro_eval,
         args.streaming_window_micro_eval,
+        args.synthetic_sweep,
         args.real_llada_smoke,
         args.real_llada_micro_eval,
     ]
     if sum(1 for selected in selected_runners if selected) > 1:
         parser.error(
             "--micro-eval, --xor-parity-micro-eval, --lt-fountain-micro-eval, "
-            "--streaming-window-micro-eval, --real-llada-smoke, and "
+            "--streaming-window-micro-eval, --synthetic-sweep, --real-llada-smoke, and "
             "--real-llada-micro-eval are separate runners"
         )
+
+    if args.synthetic_sweep:
+        from diffusion_fec.experiments.sweep import (
+            DEFAULT_SWEEP_RUNNERS,
+            build_synthetic_sweep_config,
+            default_interleaving_source_layouts,
+            default_interleaving_wire_orders,
+            run_synthetic_sweep,
+        )
+
+        if args.channel == CHANNEL_GILBERT_ELLIOTT:
+            parser.error("--synthetic-sweep currently supports random_iid and burst channels")
+        source_layouts = (
+            default_interleaving_source_layouts()
+            if args.sweep_include_interleaving_variants
+            else (_source_layout_from_args(args),)
+        )
+        wire_interleavings = (
+            default_interleaving_wire_orders()
+            if args.sweep_include_interleaving_variants
+            else (_wire_interleaving_from_args(args),)
+        )
+        channel_modes = (
+            (CHANNEL_RANDOM_IID, CHANNEL_BURST)
+            if args.sweep_include_burst
+            else (args.channel,)
+        )
+        config = build_synthetic_sweep_config(
+            sample_lengths=_parse_sample_lengths(
+                args.sample_lengths,
+                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+            ),
+            loss_rates=_parse_float_list(args.sweep_loss_rates, default=(args.loss_rate,)),
+            seed=args.seed,
+            tokens_per_packet=args.tokens_per_packet,
+            hash_bits=args.hash_bits,
+            vocab_size=args.vocab_size,
+            runners=_parse_string_list(args.sweep_runners, default=DEFAULT_SWEEP_RUNNERS),
+            source_layouts=source_layouts,
+            wire_interleavings=wire_interleavings,
+            channel_modes=channel_modes,
+            burst_length=1 if args.burst_length is None else args.burst_length,
+        )
+        run_synthetic_sweep(
+            output_dir=args.output_dir,
+            config=config,
+            overwrite=args.sweep_overwrite,
+        )
+        return 0
 
     if args.micro_eval:
         run_synthetic_micro_eval(
@@ -476,6 +540,29 @@ def _parse_sample_lengths(raw: str | None, *, default: Sequence[int]) -> tuple[i
     if not values:
         raise ValueError("sample lengths must contain at least one value")
     return tuple(values)
+
+
+def _parse_float_list(raw: str | None, *, default: Sequence[float]) -> tuple[float, ...]:
+    if raw is None:
+        return tuple(default)
+    values: list[float] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        values.append(float(item))
+    if not values:
+        raise ValueError("float list must contain at least one value")
+    return tuple(values)
+
+
+def _parse_string_list(raw: str | None, *, default: Sequence[str]) -> tuple[str, ...]:
+    if raw is None:
+        return tuple(default)
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if not values:
+        raise ValueError("string list must contain at least one value")
+    return values
 
 
 def _source_layout_from_args(args: argparse.Namespace) -> SourceLayoutConfig:

@@ -283,6 +283,61 @@ The aggregate helper reports case counts, exact-match rate, known-position
 preservation rate, mean recovery/edit metrics, mean latency, mean model forward
 calls, and mean repair overhead where those fields are present.
 
+## Synthetic Sweeps And Reports
+
+The synthetic sweep runner executes the main comparison set with model-free
+local paths:
+
+- fake LLaDA-shaped model only,
+- fake LLaDA-shaped model plus transmitted lookback-1 hashes,
+- XOR parity matched overhead,
+- LT/fountain matched overhead,
+- streaming-window matched overhead.
+
+Compact local sweep:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\synthetic_sweep `
+  --synthetic-sweep `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --loss-rate 0.5 `
+  --hash-bits 4 `
+  --seed 0
+```
+
+Interleaving and burst-loss coverage:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\synthetic_sweep_interleaving `
+  --synthetic-sweep `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --loss-rate 0.5 `
+  --hash-bits 4 `
+  --seed 0 `
+  --sweep-include-burst `
+  --sweep-include-interleaving-variants `
+  --burst-length 2
+```
+
+The sweep writes `sweep_manifest.json`, `sweep_runs.csv`, child run artifacts,
+a fake hash profile directory when needed, and an `analysis/` bundle.
+
+Build or rebuild an analysis bundle from any run root:
+
+```powershell
+python -m diffusion_fec.analysis.report `
+  --run-root runs\synthetic_sweep\runs `
+  --output-dir runs\synthetic_sweep\analysis
+```
+
+The report bundle includes aggregate CSVs, a markdown summary, SVG metric plots,
+and compact failure examples. These outputs summarize the provided artifacts;
+they do not convert smoke or micro-eval runs into research claims.
+
 ## Correctness Checks For Smoke Output
 
 For every run:

@@ -205,6 +205,7 @@ def run_synthetic_micro_eval(
                 source_layout=source_layout,
                 wire_interleaving=wire_interleaving,
                 channel_config=case_channel_config,
+                hash_profile_source=hash_profile_info.get("source", ""),
             )
         )
         events.append(
@@ -406,9 +407,11 @@ def _result_row(
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
+    hash_profile_source: str,
 ) -> dict[str, Any]:
     metrics = case.metrics.to_dict()
     plan = case.reconstruction_plan
+    packet_count = len(case.loss_result.received) + len(case.loss_result.dropped)
     return {
         "run_id": run_id,
         "case_id": case_id,
@@ -440,6 +443,16 @@ def _result_row(
         "unguided_count": plan.unguided_count,
         "received_packet_count": len(case.loss_result.received),
         "dropped_packet_count": len(case.loss_result.dropped),
+        "source_packet_count": packet_count,
+        "extra_packet_count": 0,
+        "repair_packet_count": 0,
+        "repair_token_budget": 0,
+        "target_overhead_ratio": 0.0,
+        "actual_repair_token_overhead_ratio": 0.0,
+        "hash_profile_source": hash_profile_source,
+        "decode_latency_sec": 0.0,
+        "decoder_steps": case.decoding_result.steps,
+        "model_forward_calls": case.decoding_result.diagnostics.get("model_forward_calls", ""),
         **metrics,
         "sample_index": sample_index,
     }

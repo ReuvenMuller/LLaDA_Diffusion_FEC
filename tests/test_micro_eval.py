@@ -142,7 +142,11 @@ def test_profile_backed_fake_micro_eval_loads_existing_profile_on_second_run(tmp
     assert second_manifest["hash_profile"]["source"] == "loaded_profile"
     assert (profile_dir / "uniform_hash4_map.npy").exists()
     assert (profile_dir / "hash_profile_metadata.json").exists()
-    assert read_csv(first_dir / "results.csv") == read_csv(second_dir / "results.csv")
+    first_rows = read_csv(first_dir / "results.csv")
+    second_rows = read_csv(second_dir / "results.csv")
+    first_rows[0].pop("hash_profile_source")
+    second_rows[0].pop("hash_profile_source")
+    assert first_rows == second_rows
 
 
 def test_micro_eval_cli_writes_layout_and_wire_config(tmp_path) -> None:

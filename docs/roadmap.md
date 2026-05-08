@@ -34,12 +34,15 @@ Done:
 - streaming-window matched-overhead baseline codec and synthetic micro-eval runner
 - deterministic text-record loading utilities
 - result aggregation helpers for sweep CSVs
+- deterministic synthetic sweep orchestration for the main comparison set
+- analysis report artifacts: aggregate CSV, markdown summary, SVG metric plots,
+  and qualitative failure examples
+- research runbook with local, server, profile, and final experiment conventions
 
 Not done:
 
-- larger server sweeps
-- plot/table generation beyond aggregate CSVs
-- qualitative failure-example extraction
+- larger server sweeps using frozen datasets and profiles
+- final paper-ready plots/tables generated from completed server sweeps
 
 Current smoke and micro-eval outputs are engineering validation only. They are
 not research claims.
@@ -184,13 +187,23 @@ Add:
 
 Freeze configs and hash profiles before final research runs.
 
+Status: framework support is implemented. The code can run skip-aware synthetic
+sweeps, aggregate run outputs, write summary tables and SVG metric plots, and
+extract failure examples. The remaining work is operational: run larger
+server-backed experiments with frozen data/profile/config choices.
+
 ## Immediate Next Phase
 
-Begin Phase 6:
+The implementation framework is ready for first frozen server sweeps.
 
-- add small sweep commands/configs for fake, real LLaDA, and classical baselines
-- add plot/table generation for metrics, latency, overhead, and failure examples
-- freeze profile/config conventions before larger server-backed runs
+Recommended next operations:
+
+- build or verify LLaDA hash profiles for 4, 8, and 16 bits
+- run model-only and model+hash real LLaDA micro-evals under frozen configs
+- run classical matched-overhead synthetic or dataset-backed baselines with the
+  same channel/interleaving settings
+- aggregate all run roots with `python -m diffusion_fec.analysis.report`
+- inspect `failure_examples.jsonl` before making research claims
 
 Acceptance:
 

@@ -10,10 +10,11 @@ Read these documents in order when implementing the first prototype.
 6. [Experiment plan](experiment_plan.md)
 7. [Development notes](development_notes.md)
 8. [Roadmap](roadmap.md)
-9. [Hash profiles](hash_profiles.md)
-10. [LLaDA server model run notes](llada_server_model_notes.md)
-11. [Reference sources](reference_sources.md)
-12. [Server SSH workflow](server_ssh_workflow.md)
-13. [Agent handoff](AGENT_HANDOFF.md)
+9. [Research runbook](research_runbook.md)
+10. [Hash profiles](hash_profiles.md)
+11. [LLaDA server model run notes](llada_server_model_notes.md)
+12. [Reference sources](reference_sources.md)
+13. [Server SSH workflow](server_ssh_workflow.md)
+14. [Agent handoff](AGENT_HANDOFF.md)
 
 The most implementation-critical file is [LLaDA decoding design](llada_decoding_design.md). It defines the constrained denoising loop: masked target tensor, fixed-token restoration, hash-bucket logit masking, low-confidence commit policy, and diagnostics.

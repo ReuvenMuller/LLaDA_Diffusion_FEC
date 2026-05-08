@@ -22,9 +22,34 @@ Recommended reading order:
 6. `docs/implementation_plan.md`
 7. `docs/experiment_plan.md`
 8. `docs/development_notes.md`
-9. `docs/reference_sources.md`
+9. `docs/roadmap.md`
+10. `docs/research_runbook.md`
+11. `docs/hash_profiles.md`
+12. `docs/llada_server_model_notes.md`
+13. `docs/reference_sources.md`
 
 The most important implementation file is `docs/llada_decoding_design.md`. It defines the actual constrained denoising algorithm.
+
+## Current State
+
+The core framework is now implemented:
+
+- core recovery dataclasses,
+- source and wire packetization/interleaving,
+- IID, burst, and Gilbert-Elliott packet loss,
+- transmitted lookback-1 token-hash protection,
+- tokenizer-specific persisted hash profiles,
+- fake LLaDA-shaped constrained diffusion decoder,
+- Hugging Face LLaDA adapter,
+- opt-in real LLaDA smoke and micro-eval paths,
+- model-only and model+hash synthetic micro-evals,
+- XOR, LT/fountain, and streaming-window matched-overhead baselines,
+- deterministic text sample loading,
+- sweep orchestration,
+- aggregate/report artifacts and failure-example extraction.
+
+Default tests are model-free. Real LLaDA paths are opt-in and should be run on
+the GPU server with loaded hash profiles.
 
 ## Before Executing
 

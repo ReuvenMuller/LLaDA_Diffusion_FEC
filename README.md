@@ -49,6 +49,7 @@ See [docs/reference_sources.md](docs/reference_sources.md) for model and code re
 - [Experiment plan](docs/experiment_plan.md)
 - [Development notes](docs/development_notes.md)
 - [Roadmap](docs/roadmap.md)
+- [Research runbook](docs/research_runbook.md)
 - [Hash profiles](docs/hash_profiles.md)
 - [LLaDA server model run notes](docs/llada_server_model_notes.md)
 - [Reference sources](docs/reference_sources.md)
@@ -87,3 +88,20 @@ python -m diffusion_fec.experiments.runner `
 ```
 
 This command is model-free and is not a research result.
+
+Compact local framework sweep:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\synthetic_sweep `
+  --synthetic-sweep `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --loss-rate 0.5 `
+  --hash-bits 4 `
+  --seed 0
+```
+
+The sweep writes child run artifacts plus `analysis/aggregate.csv`,
+`analysis/summary.md`, SVG metric plots, and `analysis/failure_examples.jsonl`.
+It is still synthetic engineering validation, not a research result.
