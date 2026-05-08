@@ -23,7 +23,6 @@ def test_llada_real_model_forward_smoke_opt_in() -> None:
 
     model_kwargs = {}
     if torch.cuda.is_available():
-        model_kwargs["device_map"] = "auto"
         model_kwargs["torch_dtype"] = torch.bfloat16
 
     adapter = LLaDAAdapter.from_pretrained(
@@ -31,6 +30,8 @@ def test_llada_real_model_forward_smoke_opt_in() -> None:
         load_model=True,
         model_kwargs=model_kwargs,
     )
+    if torch.cuda.is_available() and adapter.model is not None:
+        adapter.model.to("cuda")
     input_ids = [[adapter.mask_token_id]]
     output = adapter.forward(input_ids, attention_mask=[[1]])
 

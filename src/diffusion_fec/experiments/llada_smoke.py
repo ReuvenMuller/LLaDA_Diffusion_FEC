@@ -173,16 +173,18 @@ def _load_model(
 ) -> LLaDAAdapter:
     model_kwargs: dict[str, Any] = {"local_files_only": local_files_only}
     if use_cuda:
-        model_kwargs["device_map"] = "auto"
         model_kwargs["torch_dtype"] = torch_module.bfloat16
     try:
-        return LLaDAAdapter.from_pretrained(
+        adapter = LLaDAAdapter.from_pretrained(
             model_id,
             load_model=True,
             config_kwargs={"local_files_only": local_files_only},
             tokenizer_kwargs={"local_files_only": local_files_only},
             model_kwargs=model_kwargs,
         )
+        if use_cuda and adapter.model is not None:
+            adapter.model.to("cuda")
+        return adapter
     except Exception as exc:
         cache_hint = (
             " Cache-only mode is enabled; confirm all model weight files are present."
