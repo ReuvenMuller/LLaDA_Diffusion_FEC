@@ -277,25 +277,41 @@ The frozen GenFEC WikiText-derived dataset copy lives at:
 data/wikitext2_genfec_test_messages.json
 ```
 
-Run a local dataset-backed validation sweep:
+For fair model-vs-classical comparisons, first build a LLaDA-tokenized artifact.
+This loads tokenizer/config only:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir data `
+  --build-llada-tokenized-artifact `
+  --dataset-file data\wikitext2_genfec_test_messages.json `
+  --dataset-label wikitext2_genfec_test_messages `
+  --source-dataset-manifest data\wikitext2_genfec_manifest.json `
+  --dataset-sample-count 10 `
+  --dataset-seed 0 `
+  --dataset-max-tokens 128 `
+  --llada-local-files-only `
+  --tokenized-output-file data\llada_tokenized_wikitext2_genfec_seed0_max128.json
+```
+
+Run a local validation sweep on those exact LLaDA token IDs:
 
 ```powershell
 python -m diffusion_fec.experiments.runner `
   --output-dir runs\dataset_validation_fake `
   --synthetic-sweep `
-  --dataset-file data\wikitext2_genfec_test_messages.json `
-  --dataset-label wikitext2_genfec_test_messages `
-  --dataset-sample-count 3 `
-  --dataset-max-tokens 128 `
+  --tokenized-samples-file data\llada_tokenized_wikitext2_genfec_seed0_max128.json `
   --tokens-per-packet 4 `
   --loss-rate 0.2 `
   --hash-bits 4 `
   --seed 0
 ```
 
-For real LLaDA dataset-backed validation, pass the same `--dataset-*` options to
-`--real-llada-micro-eval`. The LLaDA adapter tokenizes the loaded text and
-records sample IDs/token counts in the manifest.
+For real LLaDA dataset-backed validation, prefer the same
+`--tokenized-samples-file` path. The real runner verifies the stored token IDs
+against the current LLaDA tokenizer before loading model weights. The older
+`--dataset-file` fake path remains available for quick local plumbing checks,
+but it uses a deterministic local tokenizer and is not a fair comparison basis.
 
 Result CSVs can be aggregated with:
 

@@ -97,25 +97,41 @@ field is `original_message`. This artifact is shared with GenFEC for
 comparability, but tokenization is model-specific. Do not reuse Qwen token
 counts or Qwen hash profiles.
 
-Run a local model-free validation on real sample geometry:
+For fair comparisons, first freeze a LLaDA-tokenized artifact. This loads only
+the tokenizer/config, not model weights:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir data `
+  --build-llada-tokenized-artifact `
+  --dataset-file data\wikitext2_genfec_test_messages.json `
+  --dataset-label wikitext2_genfec_test_messages `
+  --source-dataset-manifest data\wikitext2_genfec_manifest.json `
+  --dataset-sample-count 10 `
+  --dataset-seed 0 `
+  --dataset-max-tokens 128 `
+  --llada-local-files-only `
+  --tokenized-output-file data\llada_tokenized_wikitext2_genfec_seed0_max128.json
+```
+
+Then run local model-free validation on the frozen LLaDA token IDs:
 
 ```powershell
 python -m diffusion_fec.experiments.runner `
   --output-dir runs\dataset_validation_fake `
   --synthetic-sweep `
-  --dataset-file data\wikitext2_genfec_test_messages.json `
-  --dataset-label wikitext2_genfec_test_messages `
-  --dataset-sample-count 3 `
-  --dataset-max-tokens 128 `
+  --tokenized-samples-file data\llada_tokenized_wikitext2_genfec_seed0_max128.json `
   --tokens-per-packet 4 `
   --loss-rate 0.2 `
   --hash-bits 4 `
   --seed 0
 ```
 
-The fake validation tokenizer is deterministic and local-only. It exists to
-check packetization, loss, overhead, artifacts, and analysis on real text sample
-geometry before loading LLaDA.
+The older `--dataset-file` fake path is still useful for quick plumbing checks,
+but it uses a local deterministic tokenizer and must not be used for fair
+model-vs-classical comparison. The frozen tokenized artifact keeps text samples,
+LLaDA token IDs, packetization, loss events, scoring, and overhead accounting on
+the same problem.
 
 ## Analysis Artifacts
 
@@ -218,10 +234,7 @@ python -m diffusion_fec.experiments.runner \
   --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_dataset_model_only_smoke \
   --real-llada-micro-eval \
   --micro-eval-mode model_only \
-  --dataset-file data/wikitext2_genfec_test_messages.json \
-  --dataset-label wikitext2_genfec_test_messages \
-  --dataset-sample-count 1 \
-  --dataset-max-tokens 64 \
+  --tokenized-samples-file data/llada_tokenized_wikitext2_genfec_seed0_max128.json \
   --llada-local-files-only \
   --tokens-per-packet 4 \
   --hash-bits 4 \
@@ -236,10 +249,7 @@ python -m diffusion_fec.experiments.runner \
   --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_dataset_hash4_smoke \
   --real-llada-micro-eval \
   --hash-profile-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/hash_profiles/llada_1_5_real_v1 \
-  --dataset-file data/wikitext2_genfec_test_messages.json \
-  --dataset-label wikitext2_genfec_test_messages \
-  --dataset-sample-count 1 \
-  --dataset-max-tokens 64 \
+  --tokenized-samples-file data/llada_tokenized_wikitext2_genfec_seed0_max128.json \
   --llada-local-files-only \
   --tokens-per-packet 4 \
   --hash-bits 4 \
@@ -253,7 +263,7 @@ Run the analysis writer over the server run root after a group of runs finishes.
 
 Before final research claims:
 
-- freeze dataset sampling and sample IDs,
+- freeze the LLaDA-tokenized sample artifact and sample IDs,
 - freeze LLaDA cache/model revision,
 - freeze hash profiles for 4, 8, and 16 bits,
 - freeze packet size, interleaving, and channel configs,

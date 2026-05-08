@@ -36,6 +36,8 @@ Done:
 - frozen GenFEC WikiText-derived validation artifact copied into `data/`
 - dataset-backed token sample loading for fake, classical, and real LLaDA
   micro-eval paths
+- LLaDA-tokenized sample artifact writer/loader so fake, classical, and real
+  LLaDA paths can consume the same token IDs
 - result aggregation helpers for sweep CSVs
 - deterministic synthetic sweep orchestration for the main comparison set
 - analysis report artifacts: aggregate CSV, markdown summary, SVG metric plots,
@@ -81,6 +83,8 @@ are not part of the main research story.
 - Do not modify `GenFEC_Depth_Exam`.
 - Real LLaDA runs must load existing hash profiles.
 - Real LLaDA runs must not live-build hash maps during model execution.
+- Fair model-vs-classical dataset comparisons must use frozen LLaDA-tokenized
+  sample artifacts, not the fake local text tokenizer.
 - No oracle hash metadata in real strategy paths.
 - Default local tests stay model-free and fast.
 - Real LLaDA tests and runs stay opt-in and server-backed.

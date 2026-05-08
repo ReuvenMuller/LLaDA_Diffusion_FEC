@@ -26,6 +26,7 @@ from diffusion_fec.coding.hash_profiles import (
 )
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME, LOOKBACK_HASH_METADATA_KEY
+from diffusion_fec.data.tokenized_samples import load_tokenized_sample_artifact
 from diffusion_fec.experiments.dataset_samples import load_dataset_token_samples
 from diffusion_fec.experiments.llada_smoke import (
     RealLLaDASmokeUnavailable,
@@ -76,6 +77,7 @@ def run_real_llada_micro_eval(
     dataset_seed: int = 0,
     dataset_min_tokens: int = 1,
     dataset_max_tokens: int | None = None,
+    tokenized_samples_path: str | Path | None = None,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
     channel_config: PacketLossChannelConfig | None = None,
@@ -106,7 +108,19 @@ def run_real_llada_micro_eval(
     tokenizer_stage = _tokenizer_stage(tokenizer)
     samples = None
     dataset_info = None
-    if dataset_path is not None:
+    if dataset_path is not None and tokenized_samples_path is not None:
+        raise RealLLaDAMicroEvalUnavailable(
+            "Pass either dataset_path or tokenized_samples_path, not both. "
+            "Frozen comparisons should prefer tokenized_samples_path."
+        )
+    if tokenized_samples_path is not None:
+        samples, dataset_info = _load_pretokenized_llada_samples(
+            tokenized_samples_path=tokenized_samples_path,
+            tokenizer=tokenizer,
+            model_id=model_id,
+        )
+        sample_lengths = tuple(len(sample.token_ids) for sample in samples)
+    elif dataset_path is not None:
         samples, dataset_info = _load_llada_dataset_samples(
             dataset_path=dataset_path,
             dataset_label=dataset_label,
@@ -466,6 +480,41 @@ def _load_llada_dataset_samples(
     )
 
 
+def _load_pretokenized_llada_samples(
+    *,
+    tokenized_samples_path: str | Path,
+    tokenizer: LLaDAAdapter,
+    model_id: str,
+) -> tuple[tuple[TokenSample, ...], dict[str, Any]]:
+    try:
+        samples, info = load_tokenized_sample_artifact(
+            tokenized_samples_path,
+            expected_vocab_size=tokenizer.vocab_size,
+            expected_model_id=model_id,
+            expected_tokenizer_name=tokenizer.model_id,
+        )
+    except ValueError as exc:
+        raise RealLLaDAMicroEvalUnavailable(str(exc)) from exc
+    _verify_tokenized_samples_against_tokenizer(samples=samples, tokenizer=tokenizer)
+    info = dict(info)
+    info["tokenizer_verification"] = "matched_current_llada_tokenizer"
+    return samples, info
+
+
+def _verify_tokenized_samples_against_tokenizer(
+    *,
+    samples: Sequence[TokenSample],
+    tokenizer: LLaDAAdapter,
+) -> None:
+    for sample in samples:
+        expected = tuple(tokenizer.tokenize(sample.text, add_special_tokens=False))
+        if expected != sample.token_ids:
+            raise RealLLaDAMicroEvalUnavailable(
+                "Pre-tokenized sample artifact does not match the current LLaDA "
+                f"tokenizer for sample_id={sample.sample_id!r}."
+            )
+
+
 def _run_id(
     *,
     model_id: str,
@@ -562,6 +611,11 @@ def _manifest(
 
 def _sample_generation_info(dataset_info: dict[str, Any] | None) -> dict[str, Any]:
     if dataset_info:
+        if dataset_info.get("text_source") == "pretokenized_token_samples":
+            return {
+                "type": "loaded_pretokenized_llada_samples",
+                "dataset": dict(dataset_info),
+            }
         return {
             "type": "loaded_text_dataset_tokenized_with_llada",
             "dataset": dict(dataset_info),

@@ -49,7 +49,24 @@ DEFAULT_PAD_TOKEN_ID = 2
 
 @dataclass
 class FakeForwardOutput:
-    logits: list[list[list[float]]]
+    logits: list[list["_TargetPositionLogits"]]
+
+
+class _TargetPositionLogits:
+    """Sparse sequence-like logits for large tokenizer vocabularies."""
+
+    def __init__(self, *, vocab_size: int, target_token_id: int | None, score: float):
+        self.vocab_size = vocab_size
+        self.target_token_id = target_token_id
+        self.score = score
+
+    def __len__(self) -> int:
+        return self.vocab_size
+
+    def __getitem__(self, token_id: int) -> float:
+        if self.target_token_id is not None and int(token_id) == self.target_token_id:
+            return self.score
+        return 0.0
 
 
 class FakeDeterministicMicroEvalModel:
@@ -61,10 +78,20 @@ class FakeDeterministicMicroEvalModel:
 
     def forward(self, input_ids, attention_mask=None):
         sequence_length = len(input_ids[0])
-        logits = [[[0.0 for _ in range(self.vocab_size)] for _ in range(sequence_length)]]
-        for position, token_id in enumerate(self.target_tokens):
-            if position < sequence_length:
-                logits[0][position][token_id] = 100.0 - position
+        logits = [
+            [
+                _TargetPositionLogits(
+                    vocab_size=self.vocab_size,
+                    target_token_id=(
+                        self.target_tokens[position]
+                        if position < len(self.target_tokens)
+                        else None
+                    ),
+                    score=100.0 - position,
+                )
+                for position in range(sequence_length)
+            ]
+        ]
         return FakeForwardOutput(logits=logits)
 
     def decode(self, token_ids, skip_special_tokens=False):

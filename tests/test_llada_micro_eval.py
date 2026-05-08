@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from diffusion_fec.coding.hash_profiles import build_and_save_hash_profile
+from diffusion_fec.data.tokenized_samples import write_tokenized_sample_artifact
 from diffusion_fec.experiments.llada_micro_eval import (
     RealLLaDAMicroEvalUnavailable,
     run_real_llada_micro_eval,
@@ -245,6 +246,101 @@ def test_real_llada_micro_eval_can_tokenize_dataset_samples(tmp_path) -> None:
     assert rows[0]["source_token_count"] == "4"
 
 
+def test_real_llada_micro_eval_uses_pretokenized_samples(tmp_path) -> None:
+    dataset_path = tmp_path / "genfec_messages.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "wiki_0",
+                    "original_message": "abcd",
+                    "word_count": 1,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    tokenized_path = tmp_path / "llada_tokenized.json"
+    fake_adapter = FakeLLaDAAdapter()
+    write_tokenized_sample_artifact(
+        dataset_path=dataset_path,
+        output_path=tokenized_path,
+        tokenize=lambda text: fake_adapter.tokenize(text, add_special_tokens=False),
+        tokenizer_name=MODEL_ID,
+        model_id=MODEL_ID,
+        vocab_size=fake_adapter.vocab_size,
+        sample_count=1,
+        seed=0,
+        max_tokens=4,
+        dataset_label="test_llada_tokenized",
+    )
+    output_dir = tmp_path / "run"
+
+    run_real_llada_micro_eval(
+        output_dir=output_dir,
+        model_id=MODEL_ID,
+        mode=MICRO_EVAL_MODEL_ONLY,
+        loss_rate=0.0,
+        seed=1,
+        tokens_per_packet=2,
+        hash_bits=4,
+        steps=2,
+        tokenized_samples_path=tokenized_path,
+        torch_module=FakeTorch(),
+        tokenizer_adapter=fake_adapter,
+        model_adapter=fake_adapter,
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    rows = read_csv(output_dir / "results.csv")
+
+    sample_generation = manifest["config"]["sample_generation"]
+    assert sample_generation["type"] == "loaded_pretokenized_llada_samples"
+    assert sample_generation["dataset"]["text_source"] == "pretokenized_token_samples"
+    assert sample_generation["dataset"]["tokenizer_verification"] == "matched_current_llada_tokenizer"
+    assert sample_generation["dataset"]["tokenized_artifact_sha256"]
+    assert manifest["config"]["sample_lengths"] == [4]
+    assert rows[0]["sample_id"] == "wiki_0"
+    assert rows[0]["source_token_count"] == "4"
+
+
+def test_real_llada_micro_eval_rejects_stale_pretokenized_samples(tmp_path) -> None:
+    dataset_path = tmp_path / "genfec_messages.json"
+    dataset_path.write_text(
+        json.dumps([{"id": "wiki_0", "original_message": "abcd"}]),
+        encoding="utf-8",
+    )
+    tokenized_path = tmp_path / "llada_tokenized.json"
+    fake_adapter = FakeLLaDAAdapter()
+    write_tokenized_sample_artifact(
+        dataset_path=dataset_path,
+        output_path=tokenized_path,
+        tokenize=lambda text: [3, 4, 5, 6],
+        tokenizer_name=MODEL_ID,
+        model_id=MODEL_ID,
+        vocab_size=fake_adapter.vocab_size,
+        sample_count=1,
+        seed=0,
+        max_tokens=4,
+    )
+
+    with pytest.raises(RealLLaDAMicroEvalUnavailable, match="does not match"):
+        run_real_llada_micro_eval(
+            output_dir=tmp_path / "run",
+            model_id=MODEL_ID,
+            mode=MICRO_EVAL_MODEL_ONLY,
+            loss_rate=0.0,
+            seed=1,
+            tokens_per_packet=2,
+            hash_bits=4,
+            steps=2,
+            tokenized_samples_path=tokenized_path,
+            torch_module=FakeTorch(),
+            tokenizer_adapter=fake_adapter,
+            model_adapter=fake_adapter,
+        )
+
+
 def test_runner_routes_real_llada_micro_eval_without_loading_model(monkeypatch, tmp_path) -> None:
     import diffusion_fec.experiments.llada_micro_eval as llada_micro_eval
 
@@ -268,6 +364,8 @@ def test_runner_routes_real_llada_micro_eval_without_loading_model(monkeypatch, 
             "--hash-profile-dir",
             str(tmp_path / "profile"),
             "--llada-local-files-only",
+            "--tokenized-samples-file",
+            str(tmp_path / "llada_tokenized.json"),
         ]
     )
 
@@ -275,3 +373,4 @@ def test_runner_routes_real_llada_micro_eval_without_loading_model(monkeypatch, 
     assert captured["sample_lengths"] == (8,)
     assert captured["local_files_only"] is True
     assert captured["mode"] == MICRO_EVAL_MODEL_HASH
+    assert captured["tokenized_samples_path"] == str(tmp_path / "llada_tokenized.json")

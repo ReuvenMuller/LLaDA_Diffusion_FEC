@@ -206,6 +206,7 @@ def run_minimal_smoke(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run fake deterministic smoke artifacts.")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--build-llada-tokenized-artifact", action="store_true")
     parser.add_argument("--micro-eval", action="store_true")
     parser.add_argument("--xor-parity-micro-eval", action="store_true")
     parser.add_argument("--lt-fountain-micro-eval", action="store_true")
@@ -223,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dataset-seed", type=int, default=0)
     parser.add_argument("--dataset-min-tokens", type=int, default=1)
     parser.add_argument("--dataset-max-tokens", type=int)
+    parser.add_argument("--tokenized-samples-file")
+    parser.add_argument("--tokenized-output-file")
+    parser.add_argument("--source-dataset-manifest")
     parser.add_argument("--loss-rate", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--tokens-per-packet", type=int, default=1)
@@ -292,13 +296,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sweep-include-interleaving-variants", action="store_true")
     parser.add_argument("--sweep-include-burst", action="store_true")
     parser.add_argument("--sweep-overwrite", action="store_true")
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
+    vocab_size_was_explicit = "--vocab-size" in raw_argv
+    if args.dataset_file and args.tokenized_samples_file and not args.build_llada_tokenized_artifact:
+        parser.error("--dataset-file and --tokenized-samples-file are separate run inputs")
+    if args.build_llada_tokenized_artifact and args.tokenized_samples_file:
+        parser.error("--build-llada-tokenized-artifact writes, rather than consumes, tokenized samples")
+    if args.build_llada_tokenized_artifact and not args.dataset_file:
+        parser.error("--dataset-file is required with --build-llada-tokenized-artifact")
+
     dataset_samples = None
     dataset_info = None
-    if args.dataset_file and not args.real_llada_micro_eval and not args.real_llada_smoke:
+    if args.tokenized_samples_file and not args.real_llada_micro_eval and not args.real_llada_smoke:
+        dataset_samples, dataset_info = _tokenized_samples_from_args(
+            args,
+            expected_vocab_size=args.vocab_size if vocab_size_was_explicit else None,
+        )
+        if not vocab_size_was_explicit and dataset_info.get("vocab_size") is not None:
+            args.vocab_size = int(dataset_info["vocab_size"])
+    elif (
+        args.dataset_file
+        and not args.real_llada_micro_eval
+        and not args.real_llada_smoke
+        and not args.build_llada_tokenized_artifact
+    ):
         dataset_samples, dataset_info = _fake_dataset_samples_from_args(args)
 
     selected_runners = [
+        args.build_llada_tokenized_artifact,
         args.micro_eval,
         args.xor_parity_micro_eval,
         args.lt_fountain_micro_eval,
@@ -309,10 +335,39 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if sum(1 for selected in selected_runners if selected) > 1:
         parser.error(
-            "--micro-eval, --xor-parity-micro-eval, --lt-fountain-micro-eval, "
-            "--streaming-window-micro-eval, --synthetic-sweep, --real-llada-smoke, and "
-            "--real-llada-micro-eval are separate runners"
+            "--build-llada-tokenized-artifact, --micro-eval, --xor-parity-micro-eval, "
+            "--lt-fountain-micro-eval, --streaming-window-micro-eval, --synthetic-sweep, "
+            "--real-llada-smoke, and --real-llada-micro-eval are separate runners"
         )
+
+    if args.build_llada_tokenized_artifact:
+        from diffusion_fec.experiments.llada_tokenized_artifact import (
+            LLaDATokenizedArtifactUnavailable,
+            build_llada_tokenized_dataset_artifact,
+        )
+
+        output_path = (
+            Path(args.tokenized_output_file)
+            if args.tokenized_output_file
+            else Path(args.output_dir) / "llada_tokenized_samples.json"
+        )
+        try:
+            build_llada_tokenized_dataset_artifact(
+                dataset_path=args.dataset_file,
+                output_path=output_path,
+                model_id=args.llada_model_id,
+                dataset_label=args.dataset_label,
+                sample_count=args.dataset_sample_count,
+                seed=args.dataset_seed,
+                min_tokens=args.dataset_min_tokens,
+                max_tokens=args.dataset_max_tokens,
+                source_dataset_manifest_path=args.source_dataset_manifest,
+                local_files_only=args.llada_local_files_only,
+            )
+        except LLaDATokenizedArtifactUnavailable as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return 0
 
     if args.synthetic_sweep:
         from diffusion_fec.experiments.sweep import (
@@ -523,6 +578,7 @@ def main(argv: list[str] | None = None) -> int:
                 dataset_seed=args.dataset_seed,
                 dataset_min_tokens=args.dataset_min_tokens,
                 dataset_max_tokens=args.dataset_max_tokens,
+                tokenized_samples_path=args.tokenized_samples_file,
                 source_layout=_source_layout_from_args(args),
                 wire_interleaving=_wire_interleaving_from_args(args),
                 channel_config=_channel_config_from_args(args),
@@ -630,6 +686,19 @@ def _fake_dataset_samples_from_args(args: argparse.Namespace):
         min_tokens=args.dataset_min_tokens,
         max_tokens=args.dataset_max_tokens,
         dataset_label=args.dataset_label,
+    )
+
+
+def _tokenized_samples_from_args(
+    args: argparse.Namespace,
+    *,
+    expected_vocab_size: int | None,
+):
+    from diffusion_fec.data.tokenized_samples import load_tokenized_sample_artifact
+
+    return load_tokenized_sample_artifact(
+        args.tokenized_samples_file,
+        expected_vocab_size=expected_vocab_size,
     )
 
 

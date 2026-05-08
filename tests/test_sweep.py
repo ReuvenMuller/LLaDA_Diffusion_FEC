@@ -2,6 +2,7 @@ import csv
 import json
 
 from diffusion_fec.channels.packet_loss import CHANNEL_BURST, CHANNEL_GILBERT_ELLIOTT
+from diffusion_fec.data.tokenized_samples import write_tokenized_sample_artifact
 from diffusion_fec.experiments.runner import main
 from diffusion_fec.experiments.sweep import (
     STATUS_COMPLETED_REPLACED_STALE,
@@ -169,6 +170,61 @@ def test_synthetic_sweep_cli_uses_dataset_samples(tmp_path) -> None:
     assert first_child_rows[0]["sample_id"] == "wiki_0"
     assert int(first_child_rows[0]["source_token_count"]) <= 12
     assert first_child_manifest["config"]["sample_generation"]["type"] == "provided_token_samples"
+
+
+def test_synthetic_sweep_cli_uses_pretokenized_samples(tmp_path) -> None:
+    dataset_path = tmp_path / "genfec_messages.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {"id": "wiki_0", "original_message": "abcd"},
+                {"id": "wiki_1", "original_message": "efgh"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    tokenized_path = tmp_path / "llada_tokenized.json"
+    write_tokenized_sample_artifact(
+        dataset_path=dataset_path,
+        output_path=tokenized_path,
+        tokenize=lambda text: [20 + index for index, _ in enumerate(text)],
+        tokenizer_name="fake-llada",
+        model_id="fake-llada",
+        vocab_size=64,
+        sample_count=1,
+        seed=0,
+        max_tokens=4,
+        dataset_label="test_llada_tokenized",
+    )
+    output_dir = tmp_path / "tokenized_sweep"
+
+    exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--synthetic-sweep",
+            "--tokenized-samples-file",
+            str(tokenized_path),
+            "--tokens-per-packet",
+            "2",
+            "--sweep-runners",
+            SWEEP_RUNNER_MODEL_ONLY,
+        ]
+    )
+
+    manifest = read_json(output_dir / "sweep_manifest.json")
+    rows = read_csv(output_dir / "sweep_runs.csv")
+    child_rows = read_csv(output_dir / rows[0]["results"])
+    child_manifest = read_json(output_dir / rows[0]["output_dir"] / "run_manifest.json")
+
+    assert exit_code == 0
+    assert manifest["dataset"]["text_source"] == "pretokenized_token_samples"
+    assert manifest["dataset"]["tokenizer_name"] == "fake-llada"
+    assert manifest["dataset"]["vocab_size"] == 64
+    assert child_manifest["config"]["vocab_size"] == 64
+    assert child_manifest["config"]["sample_generation"]["type"] == "provided_token_samples"
+    assert child_rows[0]["sample_id"] == "wiki_0"
+    assert child_rows[0]["source_token_count"] == "4"
 
 
 def test_synthetic_sweep_reruns_stale_dataset_child_when_selection_changes(tmp_path) -> None:
