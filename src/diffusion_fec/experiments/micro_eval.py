@@ -8,9 +8,14 @@ engineering validation only, not a research result.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
+from diffusion_fec.channels.packet_loss import (
+    CHANNEL_RANDOM_IID,
+    PacketLossChannelConfig,
+)
 from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME
@@ -74,6 +79,7 @@ def run_synthetic_micro_eval(
     steps: int = DEFAULT_MICRO_EVAL_STEPS,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
+    channel_config: PacketLossChannelConfig | None = None,
     hash_profile_dir: str | Path | None = None,
     build_hash_profile: bool = False,
     hash_map_mode: str = DEFAULT_HASH_MAP_MODE,
@@ -83,6 +89,11 @@ def run_synthetic_micro_eval(
 
     source_layout = source_layout or SourceLayoutConfig()
     wire_interleaving = wire_interleaving or WireInterleavingConfig()
+    channel_config = channel_config or PacketLossChannelConfig(
+        mode=CHANNEL_RANDOM_IID,
+        loss_rate=loss_rate,
+        seed=seed,
+    )
     sample_lengths = tuple(sample_lengths)
     _validate_micro_eval_config(
         sample_lengths=sample_lengths,
@@ -147,6 +158,7 @@ def run_synthetic_micro_eval(
         steps=steps,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
+        channel_config=channel_config,
         hash_profile_info=hash_profile_info,
     )
 
@@ -163,6 +175,7 @@ def run_synthetic_micro_eval(
             vocab_size=vocab_size,
         )
         case_seed = seed + case_index
+        case_channel_config = replace(channel_config, seed=case_seed)
         case = run_smoke_recovery_case(
             sample=sample,
             model=model,
@@ -174,6 +187,7 @@ def run_synthetic_micro_eval(
             protection_mode=protection_mode,
             source_layout=source_layout,
             wire_interleaving=wire_interleaving,
+            channel_config=case_channel_config,
         )
         case_id = f"case{case_index:04d}"
         result_rows.append(
@@ -190,6 +204,7 @@ def run_synthetic_micro_eval(
                 hash_bits=hash_bits,
                 source_layout=source_layout,
                 wire_interleaving=wire_interleaving,
+                channel_config=case_channel_config,
             )
         )
         events.append(
@@ -325,6 +340,7 @@ def _manifest(
     steps: int,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
+    channel_config: PacketLossChannelConfig,
     hash_profile_info: dict[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -352,6 +368,7 @@ def _manifest(
             "steps": steps,
             "source_layout": source_layout.to_dict(),
             "wire_interleaving": wire_interleaving.to_dict(),
+            "channel": channel_config.to_dict(),
             "sample_generation": {
                 "type": "deterministic_synthetic_token_ids",
                 "special_token_ids_excluded_from_samples": [
@@ -388,6 +405,7 @@ def _result_row(
     hash_bits: int,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
+    channel_config: PacketLossChannelConfig,
 ) -> dict[str, Any]:
     metrics = case.metrics.to_dict()
     plan = case.reconstruction_plan
@@ -404,6 +422,14 @@ def _result_row(
         "source_chunk_size": source_layout.chunk_size,
         "wire_interleaving": wire_interleaving.mode,
         "wire_interleaving_span": wire_interleaving.span,
+        "channel_mode": channel_config.mode,
+        "burst_start_wire_id": channel_config.burst_start_wire_id,
+        "burst_length": channel_config.burst_length,
+        "ge_good_loss_rate": channel_config.good_loss_rate,
+        "ge_bad_loss_rate": channel_config.bad_loss_rate,
+        "ge_good_to_bad_rate": channel_config.good_to_bad_rate,
+        "ge_bad_to_good_rate": channel_config.bad_to_good_rate,
+        "ge_initial_state": channel_config.initial_state,
         "loss_rate": loss_rate,
         "seed": case_seed,
         "tokens_per_packet": tokens_per_packet,

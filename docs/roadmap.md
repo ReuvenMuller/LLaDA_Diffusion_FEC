@@ -24,10 +24,10 @@ Done:
 - deterministic burst-loss helper over wire IDs for interleaving validation
 - model-free synthetic micro-eval runner with model-only and model+hash modes
 - opt-in real LLaDA synthetic micro-eval runner with loaded-profile enforcement
+- runner-integrated packet-loss channels: IID, burst, and Gilbert-Elliott
 
 Not done:
 
-- runner-integrated burst and Gilbert-Elliott packet channels
 - real LLaDA micro-eval execution on the GPU server after this runner update
 - real text dataset sampling
 - classical matched-overhead baselines
@@ -145,6 +145,10 @@ Add packet-erasure channels:
 Packet-level interleaving should affect burst geometry in wire order.
 Source/token interleaving should affect the geometry of erased target positions.
 
+Status: implemented for IID, burst, and Gilbert-Elliott in the smoke/micro-eval
+runner path. Local tests verify the packet-level and source-level interleaving
+effects through runner artifacts.
+
 ### Phase 5: Classical Matched-Overhead Baselines
 
 Reimplement, in this codebase:
@@ -172,15 +176,13 @@ Freeze configs and hash profiles before final research runs.
 
 ## Immediate Next Phase
 
-Run the real micro-eval on the GPU server, then implement the runner-facing part
-of Phase 4:
+Run the real micro-eval on the GPU server, then begin Phase 5:
 
-- add runner-level burst channel support after the real path is stable
-- add Gilbert-Elliott loss
-- expose channel config in micro-eval manifests and CLI
-- verify that packet-level wire interleaving changes burst-loss geometry in
-  runner artifacts
-- verify that source/token layout changes erased-token geometry in runner artifacts
+- pull the latest repository on the GPU server
+- run the loaded-profile real LLaDA micro-eval in both model-only and model+hash modes
+- inspect artifacts for latency, model-forward counts, and erased-token geometry
+- start classical matched-overhead baseline implementation with isolated modules
+- add overhead accounting shared by LLaDA hash modes and classical baselines
 
 Acceptance:
 

@@ -151,6 +151,32 @@ python -m diffusion_fec.experiments.runner `
 These micro-evals use the fake deterministic model and are engineering
 validation only.
 
+Optional packet-loss channels:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\fake_micro_eval_burst `
+  --micro-eval `
+  --sample-lengths 8 `
+  --tokens-per-packet 1 `
+  --channel burst `
+  --burst-start-wire-id 0 `
+  --burst-length 2
+```
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\fake_micro_eval_ge `
+  --micro-eval `
+  --sample-lengths 8 `
+  --tokens-per-packet 1 `
+  --channel gilbert_elliott `
+  --ge-good-loss-rate 0.0 `
+  --ge-bad-loss-rate 1.0 `
+  --ge-good-to-bad-rate 0.1 `
+  --ge-bad-to-good-rate 0.5
+```
+
 Current opt-in real LLaDA synthetic micro-eval:
 
 ```powershell

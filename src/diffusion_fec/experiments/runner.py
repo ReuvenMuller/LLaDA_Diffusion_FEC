@@ -12,6 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from diffusion_fec.channels.gilbert_elliott import GE_STATE_BAD, GE_STATE_GOOD
+from diffusion_fec.channels.packet_loss import (
+    CHANNEL_BURST,
+    CHANNEL_GILBERT_ELLIOTT,
+    CHANNEL_RANDOM_IID,
+    PacketLossChannelConfig,
+)
 from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
 from diffusion_fec.coding.packetizer import (
     SOURCE_LAYOUT_CONTIGUOUS,
@@ -239,6 +246,22 @@ def main(argv: list[str] | None = None) -> int:
         choices=[WIRE_INTERLEAVING_NONE, WIRE_INTERLEAVING_MATRIX],
     )
     parser.add_argument("--wire-interleaving-span", type=int, default=4)
+    parser.add_argument(
+        "--channel",
+        default=CHANNEL_RANDOM_IID,
+        choices=[CHANNEL_RANDOM_IID, CHANNEL_BURST, CHANNEL_GILBERT_ELLIOTT],
+    )
+    parser.add_argument("--burst-start-wire-id", type=int, default=0)
+    parser.add_argument("--burst-length", type=int)
+    parser.add_argument("--ge-good-loss-rate", type=float, default=0.0)
+    parser.add_argument("--ge-bad-loss-rate", type=float, default=1.0)
+    parser.add_argument("--ge-good-to-bad-rate", type=float, default=0.05)
+    parser.add_argument("--ge-bad-to-good-rate", type=float, default=0.5)
+    parser.add_argument(
+        "--ge-initial-state",
+        default=GE_STATE_GOOD,
+        choices=[GE_STATE_GOOD, GE_STATE_BAD],
+    )
     args = parser.parse_args(argv)
 
     selected_runners = [
@@ -265,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
             steps=args.steps,
             source_layout=_source_layout_from_args(args),
             wire_interleaving=_wire_interleaving_from_args(args),
+            channel_config=_channel_config_from_args(args),
             hash_profile_dir=args.hash_profile_dir,
             build_hash_profile=args.build_hash_profile,
             hash_map_mode=args.hash_map_mode,
@@ -304,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
                 hash_map_mode=args.hash_map_mode,
                 source_layout=_source_layout_from_args(args),
                 wire_interleaving=_wire_interleaving_from_args(args),
+                channel_config=_channel_config_from_args(args),
             )
         except RealLLaDAMicroEvalUnavailable as exc:
             print(f"Real LLaDA micro-eval unavailable: {exc}", file=sys.stderr)
@@ -382,6 +407,33 @@ def _wire_interleaving_from_args(args: argparse.Namespace) -> WireInterleavingCo
     return WireInterleavingConfig(
         mode=args.wire_interleaving,
         span=args.wire_interleaving_span,
+    )
+
+
+def _channel_config_from_args(args: argparse.Namespace) -> PacketLossChannelConfig:
+    if args.channel == CHANNEL_BURST:
+        return PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            loss_rate=args.loss_rate,
+            seed=args.seed,
+            burst_start_wire_id=args.burst_start_wire_id,
+            burst_length=1 if args.burst_length is None else args.burst_length,
+        )
+    if args.channel == CHANNEL_GILBERT_ELLIOTT:
+        return PacketLossChannelConfig(
+            mode=CHANNEL_GILBERT_ELLIOTT,
+            loss_rate=args.loss_rate,
+            seed=args.seed,
+            good_loss_rate=args.ge_good_loss_rate,
+            bad_loss_rate=args.ge_bad_loss_rate,
+            good_to_bad_rate=args.ge_good_to_bad_rate,
+            bad_to_good_rate=args.ge_bad_to_good_rate,
+            initial_state=args.ge_initial_state,
+        )
+    return PacketLossChannelConfig(
+        mode=CHANNEL_RANDOM_IID,
+        loss_rate=args.loss_rate,
+        seed=args.seed,
     )
 
 

@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from diffusion_fec.channels.random_loss import RandomLossResult, apply_random_loss
+from diffusion_fec.channels.packet_loss import (
+    CHANNEL_RANDOM_IID,
+    PacketLossChannelConfig,
+    apply_packet_loss_channel,
+)
+from diffusion_fec.channels.random_loss import RandomLossResult
 from diffusion_fec.coding.packetizer import (
     SourceLayoutConfig,
     WireInterleavingConfig,
@@ -33,6 +38,7 @@ class SmokeRecoveryCase:
     sample: TokenSample
     loss_result: RandomLossResult
     hash_metadata: dict[int, int]
+    channel_config: PacketLossChannelConfig
     protection_mode: str
     oracle_hash_metadata: bool
     mask_token_id: int | None
@@ -61,6 +67,7 @@ class SmokeRecoveryCase:
             "sample": self.sample.to_dict(),
             "loss_result": self.loss_result.to_dict(),
             "hash_metadata": dict(self.hash_metadata),
+            "channel_config": self.channel_config.to_dict(),
             "protection_mode": self.protection_mode,
             "oracle_hash_metadata": self.oracle_hash_metadata,
             "reconstruction_plan": self.reconstruction_plan.to_dict(),
@@ -84,6 +91,7 @@ def run_smoke_recovery_case(
     oracle_hash_metadata: bool = False,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
+    channel_config: PacketLossChannelConfig | None = None,
     prompt_token_ids: list[int] | None = None,
 ) -> SmokeRecoveryCase:
     """Run packetization, random loss, reconstruction planning, and decoding."""
@@ -100,7 +108,15 @@ def run_smoke_recovery_case(
         protection_mode=protection_mode,
         oracle_hash_metadata=oracle_hash_metadata,
     )
-    loss_result = apply_random_loss(transmitted_packets, loss_rate=loss_rate, seed=seed)
+    channel_config = channel_config or PacketLossChannelConfig(
+        mode=CHANNEL_RANDOM_IID,
+        loss_rate=loss_rate,
+        seed=seed,
+    )
+    loss_result = apply_packet_loss_channel(
+        transmitted_packets,
+        config=channel_config,
+    )
     hash_metadata = _received_hash_metadata(
         sample=sample,
         loss_result=loss_result,
@@ -124,6 +140,7 @@ def run_smoke_recovery_case(
         sample=sample,
         loss_result=loss_result,
         hash_metadata=hash_metadata,
+        channel_config=channel_config,
         protection_mode=protection_mode,
         oracle_hash_metadata=oracle_hash_metadata,
         mask_token_id=config.mask_token_id,

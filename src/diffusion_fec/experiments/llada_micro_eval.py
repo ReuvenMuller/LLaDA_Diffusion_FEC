@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
+from diffusion_fec.channels.packet_loss import (
+    CHANNEL_RANDOM_IID,
+    PacketLossChannelConfig,
+)
 from diffusion_fec.coding.hash_profiles import (
     DEFAULT_HASH_MAP_MODE,
     HASH_ALGORITHM,
@@ -61,6 +66,7 @@ def run_real_llada_micro_eval(
     hash_map_mode: str = DEFAULT_HASH_MAP_MODE,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
+    channel_config: PacketLossChannelConfig | None = None,
     torch_module: Any | None = None,
     tokenizer_adapter: LLaDAAdapter | None = None,
     model_adapter: LLaDAAdapter | None = None,
@@ -73,6 +79,11 @@ def run_real_llada_micro_eval(
 
     source_layout = source_layout or SourceLayoutConfig()
     wire_interleaving = wire_interleaving or WireInterleavingConfig()
+    channel_config = channel_config or PacketLossChannelConfig(
+        mode=CHANNEL_RANDOM_IID,
+        loss_rate=loss_rate,
+        seed=seed,
+    )
     sample_lengths = tuple(sample_lengths)
     _validate_config(
         sample_lengths=sample_lengths,
@@ -145,6 +156,7 @@ def run_real_llada_micro_eval(
         forward_shape=forward_shape,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
+        channel_config=channel_config,
         hash_profile_info=hash_profile_info,
     )
 
@@ -157,6 +169,7 @@ def run_real_llada_micro_eval(
             token_count=sample_length,
         )
         case_seed = seed + case_index
+        case_channel_config = replace(channel_config, seed=case_seed)
         case = run_smoke_recovery_case(
             sample=sample,
             model=adapter,
@@ -168,6 +181,7 @@ def run_real_llada_micro_eval(
             protection_mode=protection_mode,
             source_layout=source_layout,
             wire_interleaving=wire_interleaving,
+            channel_config=case_channel_config,
         )
         case_id = f"case{case_index:04d}"
         result_rows.append(
@@ -184,6 +198,7 @@ def run_real_llada_micro_eval(
                 hash_bits=hash_bits,
                 source_layout=source_layout,
                 wire_interleaving=wire_interleaving,
+                channel_config=case_channel_config,
                 hash_profile_info=hash_profile_info,
             )
         )
@@ -447,6 +462,7 @@ def _manifest(
     forward_shape: tuple[int, int, int],
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
+    channel_config: PacketLossChannelConfig,
     hash_profile_info: dict[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -479,6 +495,7 @@ def _manifest(
             "allow_cpu": allow_cpu,
             "source_layout": source_layout.to_dict(),
             "wire_interleaving": wire_interleaving.to_dict(),
+            "channel": channel_config.to_dict(),
         },
         "hash_profile": hash_profile_info,
         "artifacts": {
@@ -503,6 +520,7 @@ def _result_row(
     hash_bits: int,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
+    channel_config: PacketLossChannelConfig,
     hash_profile_info: dict[str, Any],
 ) -> dict[str, Any]:
     plan = case.reconstruction_plan
@@ -520,6 +538,14 @@ def _result_row(
         "source_chunk_size": source_layout.chunk_size,
         "wire_interleaving": wire_interleaving.mode,
         "wire_interleaving_span": wire_interleaving.span,
+        "channel_mode": channel_config.mode,
+        "burst_start_wire_id": channel_config.burst_start_wire_id,
+        "burst_length": channel_config.burst_length,
+        "ge_good_loss_rate": channel_config.good_loss_rate,
+        "ge_bad_loss_rate": channel_config.bad_loss_rate,
+        "ge_good_to_bad_rate": channel_config.good_to_bad_rate,
+        "ge_bad_to_good_rate": channel_config.bad_to_good_rate,
+        "ge_initial_state": channel_config.initial_state,
         "loss_rate": loss_rate,
         "seed": seed,
         "tokens_per_packet": tokens_per_packet,

@@ -1,9 +1,15 @@
 import csv
 import json
 
+from diffusion_fec.channels.packet_loss import (
+    CHANNEL_BURST,
+    PacketLossChannelConfig,
+)
 from diffusion_fec.coding.packetizer import (
     SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
     WIRE_INTERLEAVING_MATRIX,
+    SourceLayoutConfig,
+    WireInterleavingConfig,
 )
 from diffusion_fec.experiments.micro_eval import (
     MICRO_EVAL_MODEL_HASH,
@@ -159,6 +165,10 @@ def test_micro_eval_cli_writes_layout_and_wire_config(tmp_path) -> None:
             WIRE_INTERLEAVING_MATRIX,
             "--wire-interleaving-span",
             "4",
+            "--channel",
+            CHANNEL_BURST,
+            "--burst-length",
+            "2",
         ]
     )
 
@@ -168,5 +178,95 @@ def test_micro_eval_cli_writes_layout_and_wire_config(tmp_path) -> None:
     assert exit_code == 0
     assert manifest["config"]["source_layout"]["mode"] == SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS
     assert manifest["config"]["wire_interleaving"]["mode"] == WIRE_INTERLEAVING_MATRIX
+    assert manifest["config"]["channel"]["mode"] == CHANNEL_BURST
     assert rows[0]["source_layout"] == SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS
     assert rows[0]["wire_interleaving"] == WIRE_INTERLEAVING_MATRIX
+    assert rows[0]["channel_mode"] == CHANNEL_BURST
+
+
+def test_micro_eval_burst_channel_records_contiguous_wire_loss_geometry(tmp_path) -> None:
+    output_dir = tmp_path / "burst"
+
+    run_synthetic_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=1,
+        mode=MICRO_EVAL_MODEL_ONLY,
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=2,
+        ),
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    rows = read_csv(output_dir / "results.csv")
+    events = read_jsonl(output_dir / "events.jsonl")
+    dropped_positions = [
+        position
+        for packet in events[0]["case"]["loss_result"]["dropped"]
+        for position in packet["token_positions"]
+    ]
+
+    assert manifest["config"]["channel"]["mode"] == CHANNEL_BURST
+    assert rows[0]["channel_mode"] == CHANNEL_BURST
+    assert rows[0]["burst_length"] == "2"
+    assert dropped_positions == [0, 1]
+
+
+def test_micro_eval_wire_interleaving_changes_burst_loss_geometry(tmp_path) -> None:
+    output_dir = tmp_path / "wire_burst"
+
+    run_synthetic_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=1,
+        mode=MICRO_EVAL_MODEL_ONLY,
+        wire_interleaving=WireInterleavingConfig(
+            mode=WIRE_INTERLEAVING_MATRIX,
+            span=4,
+        ),
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=2,
+        ),
+    )
+
+    events = read_jsonl(output_dir / "events.jsonl")
+    dropped_positions = [
+        position
+        for packet in events[0]["case"]["loss_result"]["dropped"]
+        for position in packet["token_positions"]
+    ]
+
+    assert dropped_positions == [0, 4]
+
+
+def test_micro_eval_source_layout_changes_erased_token_geometry(tmp_path) -> None:
+    output_dir = tmp_path / "source_burst"
+
+    run_synthetic_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=4,
+        mode=MICRO_EVAL_MODEL_ONLY,
+        source_layout=SourceLayoutConfig(
+            mode=SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
+            chunk_size=1,
+        ),
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=1,
+        ),
+    )
+
+    events = read_jsonl(output_dir / "events.jsonl")
+    dropped_positions = [
+        position
+        for packet in events[0]["case"]["loss_result"]["dropped"]
+        for position in packet["token_positions"]
+    ]
+
+    assert dropped_positions == [0, 2, 4, 6]
