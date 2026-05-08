@@ -227,7 +227,14 @@ def _decoded_tokens_for_vocab(
         decoded_tokens = tuple(batch_decode(range(vocab_size)))
         if len(decoded_tokens) != vocab_size:
             raise ValueError("batch token conversion must return one token per token ID")
-        return decoded_tokens
+        if all(token is not None for token in decoded_tokens):
+            return decoded_tokens
+
+        decode = _resolve_decode_token(decode_token)
+        return tuple(
+            decode(token_id) if decoded_token is None else decoded_token
+            for token_id, decoded_token in enumerate(decoded_tokens)
+        )
 
     decode = _resolve_decode_token(decode_token)
     return tuple(decode(token_id) for token_id in range(vocab_size))
