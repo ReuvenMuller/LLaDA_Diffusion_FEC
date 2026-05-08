@@ -71,6 +71,10 @@ def test_results_csv_includes_metrics_and_run_metadata(tmp_path) -> None:
     assert first["lost_position_recovery_rate"] == "1.0"
     assert first["known_position_preserved"] == "True"
     assert first["remaining_mask_token_count"] == "0"
+    assert first["model_forward_calls"] == "0"
+    assert int(first["model_proposal_calls"]) > 0
+    assert first["decoder_proposal_mode"] == "model_propose_token"
+    assert first["proposal_interface_used"] == "True"
 
 
 def test_events_jsonl_contains_detailed_case_data_and_normalized_latency(tmp_path) -> None:

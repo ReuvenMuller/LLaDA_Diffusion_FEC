@@ -876,6 +876,7 @@ def _result_row(
 ) -> dict[str, Any]:
     metrics = case.metrics.to_dict()
     plan = case.reconstruction_plan
+    diagnostics = case.decoding_result.diagnostics
     return {
         "run_id": run_id,
         "case_id": case_id,
@@ -895,6 +896,10 @@ def _result_row(
         "unguided_count": plan.unguided_count,
         "received_packet_count": len(case.loss_result.received),
         "dropped_packet_count": len(case.loss_result.dropped),
+        "model_forward_calls": diagnostics.get("model_forward_calls", ""),
+        "model_proposal_calls": diagnostics.get("model_proposal_calls", ""),
+        "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode", ""),
+        "proposal_interface_used": diagnostics.get("proposal_interface_used", ""),
         **metrics,
     }
 
