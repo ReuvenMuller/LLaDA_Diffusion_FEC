@@ -43,6 +43,23 @@ def _resolve_decode_token(
     raise TypeError("decode_token must be callable or expose decode_token(token_id)")
 
 
+def _resolve_batch_decode_token(
+    decode_token: Callable[[int], str | bytes] | object,
+) -> Callable[[Iterable[int]], Iterable[str | bytes]] | None:
+    """Use tokenizer-native batch token conversion when an adapter exposes it."""
+
+    if callable(decode_token):
+        return None
+
+    for source in (decode_token, getattr(decode_token, "tokenizer", None)):
+        if source is None:
+            continue
+        convert = getattr(source, "convert_ids_to_tokens", None)
+        if callable(convert):
+            return lambda token_ids, convert=convert: convert(list(token_ids))
+    return None
+
+
 def _hash_token_to_bucket(
     token_id: int,
     decoded_token: str | bytes,
@@ -168,8 +185,6 @@ def build_token_hash_map(
         raise TypeError("vocab_size must be an int")
     if vocab_size < 0:
         raise ValueError("vocab_size must be non-negative")
-    decode = _resolve_decode_token(decode_token)
-
     excluded = frozenset(excluded_token_ids)
     for token_id in excluded:
         _validate_token_id(token_id, vocab_size, "excluded token ID")
@@ -177,10 +192,14 @@ def build_token_hash_map(
     bucket_count = 1 << hash_bits
     buckets: list[list[int]] = [[] for _ in range(bucket_count)]
     token_to_bucket: list[int] = []
-    for token_id in range(vocab_size):
+    decoded_tokens = _decoded_tokens_for_vocab(
+        vocab_size=vocab_size,
+        decode_token=decode_token,
+    )
+    for token_id, decoded_token in enumerate(decoded_tokens):
         bucket_id = _hash_token_to_bucket(
             token_id,
-            decode(token_id),
+            decoded_token,
             hash_bits=hash_bits,
             salt=salt,
         )
@@ -196,3 +215,19 @@ def build_token_hash_map(
         excluded_token_ids=excluded,
         salt=salt,
     )
+
+
+def _decoded_tokens_for_vocab(
+    *,
+    vocab_size: int,
+    decode_token: Callable[[int], str | bytes] | object,
+) -> tuple[str | bytes, ...]:
+    batch_decode = _resolve_batch_decode_token(decode_token)
+    if batch_decode is not None:
+        decoded_tokens = tuple(batch_decode(range(vocab_size)))
+        if len(decoded_tokens) != vocab_size:
+            raise ValueError("batch token conversion must return one token per token ID")
+        return decoded_tokens
+
+    decode = _resolve_decode_token(decode_token)
+    return tuple(decode(token_id) for token_id in range(vocab_size))

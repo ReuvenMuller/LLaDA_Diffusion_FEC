@@ -65,7 +65,7 @@ def run_real_llada_smoke(
     token_hash_map = build_token_hash_map(
         vocab_size=adapter.vocab_size,
         hash_bits=hash_bits,
-        decode_token=adapter.decode_token,
+        decode_token=adapter,
         excluded_token_ids={
             adapter.mask_token_id,
             *(token_id for token_id in (adapter.eos_token_id, adapter.pad_token_id) if token_id is not None),
