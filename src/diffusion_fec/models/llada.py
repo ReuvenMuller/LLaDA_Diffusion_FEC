@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import inspect
 from typing import Any
 
 from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
@@ -59,6 +60,11 @@ class LLaDAAdapter:
             load_options.update(_default_model_kwargs())
             load_options["config"] = config
             load_options.update(model_kwargs or {})
+            _patch_remote_llada_model_class(
+                config=config,
+                model_id=model_id,
+                local_files_only=bool(load_options.get("local_files_only", False)),
+            )
             model = AutoModelForCausalLM.from_pretrained(model_id, **load_options)
             eval_method = getattr(model, "eval", None)
             if callable(eval_method):
@@ -220,6 +226,64 @@ def _default_model_kwargs() -> dict[str, Any]:
     except ImportError:
         return {}
     return {"torch_dtype": torch.bfloat16}
+
+
+def _patch_remote_llada_model_class(
+    *,
+    config: Any,
+    model_id: str,
+    local_files_only: bool,
+) -> None:
+    """Patch older remote LLaDA code for newer Transformers loaders."""
+
+    auto_map = getattr(config, "auto_map", None) or {}
+    class_ref = auto_map.get("AutoModelForCausalLM") or auto_map.get("AutoModel")
+    if not class_ref:
+        return
+
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+    except ImportError:
+        return
+
+    model_class = get_class_from_dynamic_module(
+        class_ref,
+        model_id,
+        local_files_only=local_files_only,
+    )
+    if not hasattr(model_class, "all_tied_weights_keys"):
+        model_class.all_tied_weights_keys = {}
+
+    tie_weights = getattr(model_class, "tie_weights", None)
+    if not callable(tie_weights) or _accepts_transformers_tie_kwargs(tie_weights):
+        return
+    if getattr(tie_weights, "_diffusion_fec_compat_wrapper", False):
+        return
+
+    original_tie_weights = tie_weights
+
+    def tie_weights_compat(self, *args, **kwargs):
+        return original_tie_weights(self)
+
+    tie_weights_compat._diffusion_fec_compat_wrapper = True
+    model_class.tie_weights = tie_weights_compat
+
+
+def _accepts_transformers_tie_kwargs(tie_weights: Any) -> bool:
+    try:
+        signature = inspect.signature(tie_weights)
+    except (TypeError, ValueError):
+        return True
+    for parameter in signature.parameters.values():
+        if parameter.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            return True
+    return {
+        "missing_keys",
+        "recompute_mapping",
+    }.issubset(signature.parameters)
 
 
 def _first_non_none(*values: Any) -> Any:
