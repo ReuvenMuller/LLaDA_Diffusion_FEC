@@ -1,0 +1,164 @@
+# Development Notes
+
+## Environment Assumptions
+
+The first real LLaDA run will likely require a CUDA-capable GPU.
+
+Expected Python dependencies:
+
+```text
+torch
+transformers
+accelerate
+numpy
+pandas
+scipy
+datasets
+sentence-transformers
+pytest
+```
+
+Semantic similarity should be optional so smoke tests do not require sentence-transformer setup.
+
+## Reproducibility Defaults
+
+Use explicit seeds for:
+
+- dataset sampling,
+- channel loss,
+- stochastic decoding if enabled,
+- parity/fountain baselines if added.
+
+For deterministic first runs:
+
+```text
+temperature = 0.0
+remasking = low_confidence
+```
+
+## Output Directory Shape
+
+Each run directory should look like:
+
+```text
+runs/<run_name>/
+  run_manifest.json
+  config_snapshot.json
+  results.csv
+  events.jsonl
+  console.log
+```
+
+If a run is resumed, append rows but skip completed run IDs.
+
+## Run ID Shape
+
+Recommended run ID:
+
+```text
+<model>|<strategy>|<channel>|loss<rate>|sample<id>
+```
+
+Example:
+
+```text
+LLaDA-1.5|LLaDA_Hash8_NoPrompt|burst|loss0.2|sample0007
+```
+
+## Code Style
+
+Prefer clear modules over clever abstractions.
+
+Guidelines:
+
+- keep tensor-heavy code in decoder modules,
+- keep experiment orchestration out of decoder modules,
+- keep model loading out of tests unless marked slow,
+- keep file outputs centralized in experiment logging utilities,
+- make configs serializable.
+
+## First Test Suite
+
+Before loading LLaDA, tests should cover:
+
+- token hash bucket construction,
+- packetization,
+- interleaving,
+- channel outputs,
+- reconstruction plan building,
+- constraint mask construction,
+- fake-model constrained denoising.
+
+## First Real-Model Smoke Test
+
+Target:
+
+```text
+model = GSAI-ML/LLaDA-1.5
+samples = 3
+strategy = LLaDA_Hash8_NoPrompt
+channel = random
+loss_rate = 0.2
+steps = 32 first, then 128
+```
+
+Start with `steps=32` to verify mechanics quickly. Use `steps=128` only after correctness checks pass.
+
+Current opt-in CLI smoke:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\real_llada_smoke `
+  --real-llada-smoke `
+  --sample-count 1 `
+  --loss-rate 0.5 `
+  --seed 1 `
+  --tokens-per-packet 1 `
+  --hash-bits 4 `
+  --steps 2
+```
+
+Use `--llada-local-files-only` to require cached Hugging Face files. The command
+loads tokenizer/config first, then refuses to load model weights unless CUDA is
+available. Passing `--allow-cpu-real-llada` explicitly overrides that guard, but
+CPU loading is expected to be impractical for the 8B model.
+
+Current opt-in pytest smoke:
+
+```powershell
+$env:RUN_LLADA_E2E_SMOKE = "1"
+python -m pytest tests\test_llada_e2e_smoke.py -q
+```
+
+## Correctness Checks For Smoke Output
+
+For every run:
+
+- reconstructed token count equals original token count,
+- every known received position matches the original token,
+- every fixed suffix position matches the forced suffix token,
+- every hash-guided position either satisfies the hash constraint or logs a fallback reason,
+- no target position remains as the mask token,
+- metrics are finite except optional semantic similarity.
+
+## Oracle Hash Metadata In Smoke Harness
+
+The tiny smoke harness may derive hash metadata from dropped source tokens when
+`oracle_hash_metadata=True`. This is only for decoder validation: it proves that
+hash-guided denoising obeys constraints once the receiver has the right hash values.
+It is not a production or experiment strategy. Real runs should use a protection
+encoder that transmits metadata before channel loss.
+
+## Memory Notes
+
+LLaDA 1.5 is a dense 8B-class model. Expect GPU memory needs similar to other bf16 8B models, plus full-sequence diffusion forward passes.
+
+The first implementation should:
+
+- use batch size 1,
+- keep sequences comfortably below 4096 tokens,
+- use `torch.no_grad()`,
+- use bf16 on CUDA,
+- delete model objects explicitly between large runs if needed.
+
+Quantization and CPU offload can be considered later.

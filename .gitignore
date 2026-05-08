@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Local outputs
+runs/
+analysis/data/
+analysis/reports/
+*.csv
+*.jsonl
+*.log
+
+# Model/cache directories
+.cache/
+hf_cache/
+models/
+
+# OS/editor
+.DS_Store
+desktop.ini
+.vscode/
+.idea/

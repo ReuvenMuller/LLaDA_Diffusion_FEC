@@ -1,0 +1,458 @@
+"""Constrained masked-diffusion decoding loop.
+
+The implementation is intentionally torch-free for the first fake-model slice,
+but the model contract mirrors the future LLaDA adapter:
+
+``model.forward(input_ids, attention_mask=None).logits``
+
+where ``input_ids`` is batch-first and logits are shaped as
+``[batch, sequence, vocab]``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from math import ceil, exp
+from time import perf_counter
+from typing import Any
+
+from diffusion_fec.coding.token_hash import TokenHashMap
+from diffusion_fec.decoding.constraints import build_constraint_masks
+from diffusion_fec.decoding.diagnostics import (
+    editable_confidence_stat,
+    fixed_confidence_stat,
+    step_summary,
+)
+from diffusion_fec.types import (
+    ConfidenceStat,
+    DecodingResult,
+    ReconstructionEntry,
+    ReconstructionPlan,
+    STATE_KNOWN,
+    STATE_MISSING,
+)
+
+
+@dataclass(frozen=True)
+class DiffusionDecodingConfig:
+    """Configuration for deterministic constrained masked diffusion."""
+
+    mask_token_id: int
+    vocab_size: int
+    steps: int = 128
+    block_length: int = 32
+    eos_token_id: int | None = None
+    pad_token_id: int | None = None
+    banned_token_ids: tuple[int, ...] = field(default_factory=tuple)
+    fallback_on_empty_hash_bucket: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.vocab_size, int):
+            raise TypeError("vocab_size must be an int")
+        if self.vocab_size <= 0:
+            raise ValueError("vocab_size must be positive")
+        if not isinstance(self.steps, int):
+            raise TypeError("steps must be an int")
+        if self.steps <= 0:
+            raise ValueError("steps must be positive")
+        if not isinstance(self.block_length, int):
+            raise TypeError("block_length must be an int")
+        if self.block_length <= 0:
+            raise ValueError("block_length must be positive")
+        object.__setattr__(self, "banned_token_ids", tuple(self.banned_token_ids))
+
+        for field_name, token_id in (
+            ("mask_token_id", self.mask_token_id),
+            ("eos_token_id", self.eos_token_id),
+            ("pad_token_id", self.pad_token_id),
+        ):
+            if token_id is not None:
+                self._validate_token_id(token_id, field_name)
+        for token_id in self.banned_token_ids:
+            self._validate_token_id(token_id, "banned_token_ids")
+
+    @property
+    def special_token_ids(self) -> frozenset[int]:
+        ids = set(self.banned_token_ids)
+        ids.add(self.mask_token_id)
+        if self.eos_token_id is not None:
+            ids.add(self.eos_token_id)
+        if self.pad_token_id is not None:
+            ids.add(self.pad_token_id)
+        return frozenset(ids)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mask_token_id": self.mask_token_id,
+            "vocab_size": self.vocab_size,
+            "steps": self.steps,
+            "block_length": self.block_length,
+            "eos_token_id": self.eos_token_id,
+            "pad_token_id": self.pad_token_id,
+            "banned_token_ids": list(self.banned_token_ids),
+            "fallback_on_empty_hash_bucket": self.fallback_on_empty_hash_bucket,
+        }
+
+    def _validate_token_id(self, token_id: int, field_name: str) -> None:
+        if not isinstance(token_id, int):
+            raise TypeError(f"{field_name} must be an int")
+        if token_id < 0 or token_id >= self.vocab_size:
+            raise ValueError(f"{field_name} must be in range [0, {self.vocab_size})")
+
+
+@dataclass(frozen=True)
+class _Proposal:
+    full_position: int
+    target_position: int
+    token_id: int
+    top1_probability: float
+    top2_probability: float
+    candidate_count: int
+    used_fallback: bool
+
+
+def decode_masked_diffusion(
+    *,
+    model: object,
+    plan: ReconstructionPlan,
+    config: DiffusionDecodingConfig,
+    token_hash_map: TokenHashMap | None = None,
+    prompt_token_ids: Sequence[int] | None = None,
+) -> DecodingResult:
+    """Decode erased positions with hard fixed-token and hash constraints."""
+
+    prompt_tokens = tuple(prompt_token_ids or ())
+    for token_id in prompt_tokens:
+        config._validate_token_id(token_id, "prompt_token_ids")
+
+    if plan.hash_guided_count and token_hash_map is None:
+        raise ValueError("token_hash_map is required for hash-guided reconstruction plans")
+    if token_hash_map is not None and token_hash_map.vocab_size != config.vocab_size:
+        raise ValueError("token_hash_map vocab_size must match decoding config vocab_size")
+
+    start_time = perf_counter()
+    masks = build_constraint_masks(plan)
+    prompt_length = len(prompt_tokens)
+    x = _build_initial_input_ids(plan, config, prompt_tokens)
+    attention_mask = [1] * len(x)
+    fixed_token_ids = _build_fixed_token_ids(plan, prompt_tokens, prompt_length)
+    non_banned_token_ids = tuple(
+        token_id for token_id in range(config.vocab_size)
+        if token_id not in config.special_token_ids
+    )
+    if not non_banned_token_ids:
+        raise ValueError("at least one non-banned token ID is required")
+
+    stats_by_position: dict[int, ConfidenceStat] = {
+        entry.position: fixed_confidence_stat(entry)
+        for entry in plan.entries
+        if entry.state == STATE_KNOWN
+    }
+    restored_positions: set[int] = set()
+    fallback_positions: set[int] = set()
+    fallback_reasons: dict[int, str] = {}
+    step_summaries = []
+
+    if masks.editable_count == 0:
+        reconstructed_tokens = tuple(x[prompt_length:])
+        return DecodingResult(
+            reconstructed_text=_decode_tokens(model, reconstructed_tokens),
+            reconstructed_tokens=reconstructed_tokens,
+            decode_latency_sec=perf_counter() - start_time,
+            steps=0,
+            fixed_token_count=masks.fixed_count,
+            editable_token_count=0,
+            hash_guided_token_count=0,
+            confidence_stats=tuple(stats_by_position[position] for position in range(plan.total_tokens)),
+            step_summaries=(),
+            diagnostics={
+                "config": config.to_dict(),
+                "prompt_token_count": prompt_length,
+                "model_forward_calls": 0,
+                "hash_bucket_empty_positions": [],
+                "fallback_positions": [],
+                "fallback_reasons": {},
+                "restored_fixed_positions": [],
+                "restoration_count": 0,
+            },
+        )
+
+    forward_calls = 0
+    for step in range(config.steps):
+        editable_target_positions = _still_masked_target_positions(
+            x,
+            plan,
+            prompt_length,
+            config.mask_token_id,
+        )
+        if not editable_target_positions:
+            break
+
+        logits = _extract_logits(
+            model.forward([list(x)], attention_mask=[list(attention_mask)]),
+            sequence_length=len(x),
+            vocab_size=config.vocab_size,
+        )
+        forward_calls += 1
+        remaining_steps = config.steps - step
+        transfer_count = max(1, ceil(len(editable_target_positions) / remaining_steps))
+
+        proposals = [
+            _proposal_for_position(
+                entry=plan.entries[target_position],
+                full_position=prompt_length + target_position,
+                position_logits=logits[prompt_length + target_position],
+                config=config,
+                token_hash_map=token_hash_map,
+                non_banned_token_ids=non_banned_token_ids,
+            )
+            for target_position in editable_target_positions
+        ]
+        proposals.sort(
+            key=lambda proposal: (
+                -proposal.top1_probability,
+                proposal.target_position,
+            )
+        )
+        committed = proposals[:transfer_count]
+
+        committed_stats: list[ConfidenceStat] = []
+        step_fallback_positions: list[int] = []
+        for proposal in committed:
+            x[proposal.full_position] = proposal.token_id
+            entry = plan.entries[proposal.target_position]
+            stat = editable_confidence_stat(
+                entry,
+                selected_token_id=proposal.token_id,
+                top1_probability=proposal.top1_probability,
+                top2_probability=proposal.top2_probability,
+                candidate_count=proposal.candidate_count,
+                commit_step=step,
+            )
+            stats_by_position[proposal.target_position] = stat
+            committed_stats.append(stat)
+            if proposal.used_fallback:
+                fallback_positions.add(proposal.target_position)
+                step_fallback_positions.append(proposal.target_position)
+                fallback_reasons[proposal.target_position] = "hash_bucket_empty_after_bans"
+
+        step_restored = _restore_fixed_tokens(x, fixed_token_ids)
+        restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
+        still_masked_count = len(
+            _still_masked_target_positions(x, plan, prompt_length, config.mask_token_id)
+        )
+        step_summaries.append(
+            step_summary(
+                step=step,
+                still_masked_count=still_masked_count,
+                committed_stats=committed_stats,
+                fallback_positions=step_fallback_positions,
+                restored_fixed_positions=[
+                    position - prompt_length for position in step_restored if position >= prompt_length
+                ],
+            )
+        )
+
+    remaining_masked = _still_masked_target_positions(
+        x,
+        plan,
+        prompt_length,
+        config.mask_token_id,
+    )
+    if remaining_masked:
+        raise RuntimeError(f"decoder left masked target positions unfilled: {remaining_masked}")
+
+    reconstructed_tokens = tuple(x[prompt_length:])
+    ordered_stats = tuple(stats_by_position[position] for position in range(plan.total_tokens))
+    return DecodingResult(
+        reconstructed_text=_decode_tokens(model, reconstructed_tokens),
+        reconstructed_tokens=reconstructed_tokens,
+        decode_latency_sec=perf_counter() - start_time,
+        steps=len(step_summaries),
+        fixed_token_count=masks.fixed_count,
+        editable_token_count=masks.editable_count,
+        hash_guided_token_count=masks.hash_guided_count,
+        confidence_stats=ordered_stats,
+        step_summaries=tuple(step_summaries),
+        diagnostics={
+            "config": config.to_dict(),
+            "prompt_token_count": prompt_length,
+            "model_forward_calls": forward_calls,
+            "hash_bucket_empty_positions": sorted(fallback_positions),
+            "fallback_positions": sorted(fallback_positions),
+            "fallback_reasons": dict(sorted(fallback_reasons.items())),
+            "restored_fixed_positions": sorted(restored_positions),
+            "restoration_count": len(restored_positions),
+        },
+    )
+
+
+def _build_initial_input_ids(
+    plan: ReconstructionPlan,
+    config: DiffusionDecodingConfig,
+    prompt_tokens: tuple[int, ...],
+) -> list[int]:
+    x = list(prompt_tokens)
+    for entry in plan.entries:
+        if entry.fixed:
+            if entry.token_id is None:
+                raise ValueError("fixed entries require token_id")
+            x.append(entry.token_id)
+        else:
+            x.append(config.mask_token_id)
+    return x
+
+
+def _build_fixed_token_ids(
+    plan: ReconstructionPlan,
+    prompt_tokens: tuple[int, ...],
+    prompt_length: int,
+) -> dict[int, int]:
+    fixed_token_ids = {position: token_id for position, token_id in enumerate(prompt_tokens)}
+    for entry in plan.entries:
+        if entry.fixed:
+            if entry.token_id is None:
+                raise ValueError("fixed entries require token_id")
+            fixed_token_ids[prompt_length + entry.position] = entry.token_id
+    return fixed_token_ids
+
+
+def _still_masked_target_positions(
+    x: Sequence[int],
+    plan: ReconstructionPlan,
+    prompt_length: int,
+    mask_token_id: int,
+) -> list[int]:
+    return [
+        entry.position
+        for entry in plan.entries
+        if not entry.fixed and x[prompt_length + entry.position] == mask_token_id
+    ]
+
+
+def _extract_logits(
+    output: object,
+    *,
+    sequence_length: int,
+    vocab_size: int,
+) -> Sequence[Sequence[float]]:
+    logits = getattr(output, "logits", None)
+    if logits is None and isinstance(output, dict):
+        logits = output.get("logits")
+    if logits is None:
+        raise TypeError("model.forward output must expose logits")
+    if len(logits) != 1:
+        raise ValueError("decoder currently expects batch size 1 logits")
+    batch_logits = logits[0]
+    if len(batch_logits) != sequence_length:
+        raise ValueError("logits sequence length does not match input_ids")
+    for position, position_logits in enumerate(batch_logits):
+        if len(position_logits) != vocab_size:
+            raise ValueError(f"logits at position {position} do not match vocab_size")
+    return batch_logits
+
+
+def _proposal_for_position(
+    *,
+    entry: ReconstructionEntry,
+    full_position: int,
+    position_logits: Sequence[float],
+    config: DiffusionDecodingConfig,
+    token_hash_map: TokenHashMap | None,
+    non_banned_token_ids: tuple[int, ...],
+) -> _Proposal:
+    candidates, used_fallback = _candidate_token_ids(
+        entry=entry,
+        config=config,
+        token_hash_map=token_hash_map,
+        non_banned_token_ids=non_banned_token_ids,
+    )
+    token_id, top1_probability, top2_probability = _select_argmax_with_confidence(
+        position_logits,
+        candidates,
+    )
+    return _Proposal(
+        full_position=full_position,
+        target_position=entry.position,
+        token_id=token_id,
+        top1_probability=top1_probability,
+        top2_probability=top2_probability,
+        candidate_count=len(candidates),
+        used_fallback=used_fallback,
+    )
+
+
+def _candidate_token_ids(
+    *,
+    entry: ReconstructionEntry,
+    config: DiffusionDecodingConfig,
+    token_hash_map: TokenHashMap | None,
+    non_banned_token_ids: tuple[int, ...],
+) -> tuple[tuple[int, ...], bool]:
+    if entry.state != STATE_MISSING:
+        return non_banned_token_ids, False
+    if token_hash_map is None:
+        raise ValueError("token_hash_map is required for hash-guided entries")
+    if entry.hash_value is None:
+        raise ValueError("hash-guided entries require hash_value")
+
+    token_hash_map.validate_bucket_id(entry.hash_value)
+    candidates = tuple(
+        token_id for token_id in token_hash_map.candidate_token_ids(entry.hash_value)
+        if token_id not in config.special_token_ids
+    )
+    if candidates:
+        return candidates, False
+    if not config.fallback_on_empty_hash_bucket:
+        raise RuntimeError(f"hash bucket for position {entry.position} has no allowed tokens")
+    return non_banned_token_ids, True
+
+
+def _select_argmax_with_confidence(
+    position_logits: Sequence[float],
+    candidate_token_ids: tuple[int, ...],
+) -> tuple[int, float, float]:
+    if not candidate_token_ids:
+        raise RuntimeError("cannot select from an empty candidate set")
+
+    best_token_id = candidate_token_ids[0]
+    best_logit = float(position_logits[best_token_id])
+    second_logit: float | None = None
+    for token_id in candidate_token_ids[1:]:
+        logit = float(position_logits[token_id])
+        if logit > best_logit or (logit == best_logit and token_id < best_token_id):
+            second_logit = best_logit
+            best_token_id = token_id
+            best_logit = logit
+        elif second_logit is None or logit > second_logit:
+            second_logit = logit
+
+    max_logit = max(float(position_logits[token_id]) for token_id in candidate_token_ids)
+    exp_values = [
+        exp(float(position_logits[token_id]) - max_logit)
+        for token_id in candidate_token_ids
+    ]
+    denominator = sum(exp_values)
+    best_probability = exp(best_logit - max_logit) / denominator
+    if second_logit is None:
+        second_probability = 0.0
+    else:
+        second_probability = exp(second_logit - max_logit) / denominator
+    return best_token_id, best_probability, second_probability
+
+
+def _restore_fixed_tokens(x: list[int], fixed_token_ids: dict[int, int]) -> list[int]:
+    restored_positions: list[int] = []
+    for position, token_id in fixed_token_ids.items():
+        if x[position] != token_id:
+            x[position] = token_id
+            restored_positions.append(position)
+    return restored_positions
+
+
+def _decode_tokens(model: object, token_ids: tuple[int, ...]) -> str:
+    decode = getattr(model, "decode", None)
+    if callable(decode):
+        return decode(list(token_ids), skip_special_tokens=False)
+    return " ".join(str(token_id) for token_id in token_ids)
