@@ -1,6 +1,12 @@
 import csv
 import json
 
+from artifact_helpers import (
+    assert_manifest_has_run_timing,
+    assert_row_has_run_timing,
+    normalized_artifact_text,
+    strip_run_timing_from_rows,
+)
 from diffusion_fec.channels.packet_loss import (
     CHANNEL_BURST,
     PacketLossChannelConfig,
@@ -57,12 +63,14 @@ def test_model_only_micro_eval_writes_unguided_artifacts(tmp_path) -> None:
     assert manifest["config"]["mode"] == MICRO_EVAL_MODEL_ONLY
     assert manifest["config"]["protection_mode"] == "none"
     assert manifest["hash_profile"]["source"] == "not_used"
+    assert_manifest_has_run_timing(manifest)
     assert rows[0]["protection_mode"] == "none"
     assert rows[0]["hash_guided_count"] == "0"
     assert rows[0]["unguided_count"] == "8"
     assert rows[0]["hash_metadata_count"] == "0"
     assert rows[0]["hash_metadata_bit_count"] == "0"
     assert float(rows[0]["total_overhead_ratio"]) == 0.0
+    assert_row_has_run_timing(rows[0])
     assert events[0]["case"]["hash_metadata"] == {}
     assert events[0]["case"]["oracle_hash_metadata"] is False
 
@@ -141,9 +149,9 @@ def test_micro_eval_output_is_deterministic_for_same_seed(tmp_path) -> None:
     )
 
     for filename in ("run_manifest.json", "results.csv", "events.jsonl"):
-        assert (first_dir / filename).read_text(encoding="utf-8") == (
+        assert normalized_artifact_text(first_dir / filename) == normalized_artifact_text(
             second_dir / filename
-        ).read_text(encoding="utf-8")
+        )
 
 
 def test_profile_backed_fake_micro_eval_loads_existing_profile_on_second_run(tmp_path) -> None:
@@ -174,6 +182,8 @@ def test_profile_backed_fake_micro_eval_loads_existing_profile_on_second_run(tmp
     assert (profile_dir / "hash_profile_metadata.json").exists()
     first_rows = read_csv(first_dir / "results.csv")
     second_rows = read_csv(second_dir / "results.csv")
+    first_rows = strip_run_timing_from_rows(first_rows)
+    second_rows = strip_run_timing_from_rows(second_rows)
     first_rows[0].pop("hash_profile_source")
     second_rows[0].pop("hash_profile_source")
     assert first_rows == second_rows

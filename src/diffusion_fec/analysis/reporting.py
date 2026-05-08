@@ -34,6 +34,7 @@ SUMMARY_FIELDS = (
     "mean_token_edit_distance",
     "known_position_preserved_rate",
     "mean_decode_latency_sec",
+    "mean_run_wall_time_sec",
     "mean_model_forward_calls",
     "mean_hash_metadata_token_equivalent_overhead_ratio",
     "mean_actual_repair_token_overhead_ratio",

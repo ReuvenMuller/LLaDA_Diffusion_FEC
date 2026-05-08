@@ -38,6 +38,9 @@ def test_build_analysis_artifacts_writes_summary_plots_and_failures(tmp_path) ->
     assert "FakeMicroEval_ModelOnly_NoPrompt" in (analysis_dir / "summary.md").read_text(
         encoding="utf-8"
     )
+    assert "mean_run_wall_time_sec" in (analysis_dir / "summary.md").read_text(
+        encoding="utf-8"
+    )
     assert "<svg" in (analysis_dir / "exact_match_rate.svg").read_text(encoding="utf-8")
     assert "<svg" in (analysis_dir / "total_overhead_ratio.svg").read_text(encoding="utf-8")
     failures = read_jsonl(analysis_dir / "failure_examples.jsonl")
@@ -106,6 +109,7 @@ def _write_results_csv(path) -> None:
                 "lost_position_recovery_rate",
                 "remaining_mask_token_count",
                 "decode_latency_sec",
+                "run_wall_time_sec",
                 "hash_metadata_token_equivalent_overhead_ratio",
                 "actual_repair_token_overhead_ratio",
                 "total_overhead_ratio",
@@ -127,6 +131,7 @@ def _write_results_csv(path) -> None:
                 "lost_position_recovery_rate": "1.0",
                 "remaining_mask_token_count": "0",
                 "decode_latency_sec": "0.0",
+                "run_wall_time_sec": "2.0",
                 "hash_metadata_token_equivalent_overhead_ratio": "0.0",
                 "actual_repair_token_overhead_ratio": "0.0",
                 "total_overhead_ratio": "0.0",
@@ -147,6 +152,7 @@ def _write_results_csv(path) -> None:
                 "lost_position_recovery_rate": "0.0",
                 "remaining_mask_token_count": "1",
                 "decode_latency_sec": "0.0",
+                "run_wall_time_sec": "4.0",
                 "hash_metadata_token_equivalent_overhead_ratio": "0.0",
                 "actual_repair_token_overhead_ratio": "0.0",
                 "total_overhead_ratio": "0.0",

@@ -39,6 +39,7 @@ from diffusion_fec.experiments.micro_eval import (
     MICRO_EVAL_WARNING,
     run_synthetic_micro_eval,
 )
+from diffusion_fec.experiments.logging import start_run_timer
 from diffusion_fec.types import TokenSample
 
 
@@ -207,6 +208,7 @@ def run_synthetic_sweep(
 ) -> dict[str, Any]:
     """Run a model-free synthetic sweep and write sweep plus analysis artifacts."""
 
+    run_timer = start_run_timer()
     output = Path(output_dir)
     runs_dir = output / "runs"
     analysis_dir = output / "analysis"
@@ -287,6 +289,7 @@ def run_synthetic_sweep(
         ),
         "analysis_manifest": "analysis/analysis_manifest.json",
     }
+    sweep_manifest.update(run_timer.finish().to_dict())
     _write_json(output / "sweep_manifest.json", sweep_manifest)
     _write_sweep_rows(output / "sweep_runs.csv", run_rows)
     return {

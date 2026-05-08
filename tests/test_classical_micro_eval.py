@@ -1,6 +1,11 @@
 import csv
 import json
 
+from artifact_helpers import (
+    assert_manifest_has_run_timing,
+    assert_row_has_run_timing,
+    normalized_artifact_text,
+)
 from diffusion_fec.channels.packet_loss import CHANNEL_BURST, PacketLossChannelConfig
 from diffusion_fec.experiments.classical_micro_eval import (
     run_lt_fountain_micro_eval,
@@ -51,6 +56,7 @@ def test_xor_parity_micro_eval_writes_artifacts_and_repairs_single_loss(tmp_path
     assert manifest["runner"] == "xor_parity_synthetic_micro_eval"
     assert manifest["baseline_family"] == "xor_parity"
     assert manifest["config"]["xor_parity"]["data_packets_per_stripe"] == 2
+    assert_manifest_has_run_timing(manifest)
     assert rows[0]["strategy"] == "Classical_XORParity_MatchedHash4"
     assert rows[0]["baseline_family"] == "xor_parity"
     assert rows[0]["known_count"] == "8"
@@ -61,6 +67,7 @@ def test_xor_parity_micro_eval_writes_artifacts_and_repairs_single_loss(tmp_path
     assert rows[0]["target_overhead_ratio"] == str(4 / 7)
     assert rows[0]["hash_metadata_bit_count"] == "0"
     assert rows[0]["total_overhead_ratio"] == rows[0]["actual_repair_token_overhead_ratio"]
+    assert_row_has_run_timing(rows[0])
     assert events[0]["event_type"] == "xor_parity_micro_eval_case"
     assert events[0]["metrics"]["exact_match"] is True
 
@@ -111,9 +118,9 @@ def test_xor_parity_micro_eval_output_is_deterministic(tmp_path) -> None:
     )
 
     for filename in ("run_manifest.json", "results.csv", "events.jsonl"):
-        assert (first_dir / filename).read_text(encoding="utf-8") == (
+        assert normalized_artifact_text(first_dir / filename) == normalized_artifact_text(
             second_dir / filename
-        ).read_text(encoding="utf-8")
+        )
 
 
 def test_xor_parity_cli_entrypoint_writes_artifacts(tmp_path) -> None:
@@ -197,9 +204,9 @@ def test_lt_fountain_micro_eval_output_is_deterministic(tmp_path) -> None:
     )
 
     for filename in ("run_manifest.json", "results.csv", "events.jsonl"):
-        assert (first_dir / filename).read_text(encoding="utf-8") == (
+        assert normalized_artifact_text(first_dir / filename) == normalized_artifact_text(
             second_dir / filename
-        ).read_text(encoding="utf-8")
+        )
 
 
 def test_lt_fountain_cli_entrypoint_writes_artifacts(tmp_path) -> None:
@@ -283,9 +290,9 @@ def test_streaming_window_micro_eval_output_is_deterministic(tmp_path) -> None:
     )
 
     for filename in ("run_manifest.json", "results.csv", "events.jsonl"):
-        assert (first_dir / filename).read_text(encoding="utf-8") == (
+        assert normalized_artifact_text(first_dir / filename) == normalized_artifact_text(
             second_dir / filename
-        ).read_text(encoding="utf-8")
+        )
 
 
 def test_streaming_window_cli_entrypoint_writes_artifacts(tmp_path) -> None:

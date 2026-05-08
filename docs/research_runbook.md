@@ -169,6 +169,10 @@ The model+hash path reports `hash_metadata_bit_count`,
 `hash_metadata_token_equivalent_overhead_ratio`, and `total_overhead_ratio` so
 lookback metadata is not treated as free.
 
+Run manifests also include `run_started_at`, `run_finished_at`, and
+`run_wall_time_sec`. Result rows repeat `run_wall_time_sec` so aggregation can
+report whole-run timing alongside per-case `decode_latency_sec`.
+
 ## Frozen Real-Run Conventions
 
 Real LLaDA runs must use loaded tokenizer-specific hash profiles. Do not rebuild
@@ -200,7 +204,7 @@ Every real run should record:
 - channel mode and channel parameters
 - sample lengths or dataset sample IDs
 - decoder steps
-- latency and model forward calls
+- per-case decode latency, whole-run wall time, and model forward calls
 - hash metadata bit budget and total token-equivalent overhead
 
 ## Server Real LLaDA Micro-Evals

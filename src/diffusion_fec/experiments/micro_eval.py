@@ -25,7 +25,7 @@ from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_bu
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME, LOOKBACK_HASH_METADATA_KEY
 from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
-from diffusion_fec.experiments.logging import write_run_artifacts
+from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
 from diffusion_fec.experiments.smoke import SmokeRecoveryCase, run_smoke_recovery_case
 from diffusion_fec.types import TokenSample
 
@@ -148,6 +148,7 @@ def run_synthetic_micro_eval(
 ) -> dict[str, Any]:
     """Run deterministic synthetic micro-eval cases and write artifacts."""
 
+    run_timer = start_run_timer()
     source_layout = source_layout or SourceLayoutConfig()
     wire_interleaving = wire_interleaving or WireInterleavingConfig()
     channel_config = channel_config or PacketLossChannelConfig(
@@ -291,16 +292,17 @@ def run_synthetic_micro_eval(
             )
         )
 
-    write_run_artifacts(
+    artifact_data = write_run_artifacts(
         output_dir=output_dir,
         manifest=manifest,
         result_rows=result_rows,
         events=events,
+        run_timer=run_timer,
     )
     return {
         "run_id": run_id,
-        "manifest": manifest,
-        "result_rows": result_rows,
+        "manifest": artifact_data["manifest"],
+        "result_rows": artifact_data["result_rows"],
         "events": events,
     }
 

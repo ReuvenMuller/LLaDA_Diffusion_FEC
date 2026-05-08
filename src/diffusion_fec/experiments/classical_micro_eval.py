@@ -30,7 +30,7 @@ from diffusion_fec.channels.packet_loss import (
     apply_packet_loss_channel,
 )
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
-from diffusion_fec.experiments.logging import write_run_artifacts
+from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
 from diffusion_fec.experiments.micro_eval import (
     DEFAULT_MICRO_EVAL_HASH_BITS,
     DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
@@ -71,6 +71,7 @@ def run_xor_parity_micro_eval(
 ) -> dict[str, Any]:
     """Run deterministic synthetic XOR parity baseline cases and write artifacts."""
 
+    run_timer = start_run_timer()
     source_layout = source_layout or SourceLayoutConfig()
     wire_interleaving = wire_interleaving or WireInterleavingConfig()
     channel_config = channel_config or PacketLossChannelConfig(
@@ -198,16 +199,17 @@ def run_xor_parity_micro_eval(
             }
         )
 
-    write_run_artifacts(
+    artifact_data = write_run_artifacts(
         output_dir=output_dir,
         manifest=manifest,
         result_rows=result_rows,
         events=events,
+        run_timer=run_timer,
     )
     return {
         "run_id": run_id,
-        "manifest": manifest,
-        "result_rows": result_rows,
+        "manifest": artifact_data["manifest"],
+        "result_rows": artifact_data["result_rows"],
         "events": events,
     }
 
@@ -232,6 +234,7 @@ def run_lt_fountain_micro_eval(
 ) -> dict[str, Any]:
     """Run deterministic synthetic LT/fountain baseline cases and write artifacts."""
 
+    run_timer = start_run_timer()
     source_layout = source_layout or SourceLayoutConfig()
     wire_interleaving = wire_interleaving or WireInterleavingConfig()
     channel_config = channel_config or PacketLossChannelConfig(
@@ -360,16 +363,17 @@ def run_lt_fountain_micro_eval(
             }
         )
 
-    write_run_artifacts(
+    artifact_data = write_run_artifacts(
         output_dir=output_dir,
         manifest=manifest,
         result_rows=result_rows,
         events=events,
+        run_timer=run_timer,
     )
     return {
         "run_id": run_id,
-        "manifest": manifest,
-        "result_rows": result_rows,
+        "manifest": artifact_data["manifest"],
+        "result_rows": artifact_data["result_rows"],
         "events": events,
     }
 
@@ -393,6 +397,7 @@ def run_streaming_window_micro_eval(
 ) -> dict[str, Any]:
     """Run deterministic synthetic streaming-window baseline cases and write artifacts."""
 
+    run_timer = start_run_timer()
     source_layout = source_layout or SourceLayoutConfig()
     wire_interleaving = wire_interleaving or WireInterleavingConfig()
     channel_config = channel_config or PacketLossChannelConfig(
@@ -520,16 +525,17 @@ def run_streaming_window_micro_eval(
             }
         )
 
-    write_run_artifacts(
+    artifact_data = write_run_artifacts(
         output_dir=output_dir,
         manifest=manifest,
         result_rows=result_rows,
         events=events,
+        run_timer=run_timer,
     )
     return {
         "run_id": run_id,
-        "manifest": manifest,
-        "result_rows": result_rows,
+        "manifest": artifact_data["manifest"],
+        "result_rows": artifact_data["result_rows"],
         "events": events,
     }
 

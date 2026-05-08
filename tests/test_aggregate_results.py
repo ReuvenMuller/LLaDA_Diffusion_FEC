@@ -18,6 +18,7 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
             "token_edit_distance": "0",
             "lost_position_recovery_rate": "1.0",
             "decode_latency_sec": "2.0",
+            "run_wall_time_sec": "10.0",
             "hash_metadata_token_equivalent_overhead_ratio": "0.25",
             "actual_repair_token_overhead_ratio": "0.0",
             "total_overhead_ratio": "0.25",
@@ -31,6 +32,7 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
             "token_edit_distance": "4",
             "lost_position_recovery_rate": "0.0",
             "decode_latency_sec": "4.0",
+            "run_wall_time_sec": "20.0",
             "hash_metadata_token_equivalent_overhead_ratio": "0.25",
             "actual_repair_token_overhead_ratio": "0.0",
             "total_overhead_ratio": "0.25",
@@ -45,6 +47,7 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
     assert row["mean_token_edit_distance"] == 2.0
     assert row["mean_lost_position_recovery_rate"] == 0.5
     assert row["mean_decode_latency_sec"] == 3.0
+    assert row["mean_run_wall_time_sec"] == 15.0
     assert row["mean_hash_metadata_token_equivalent_overhead_ratio"] == 0.25
     assert row["mean_total_overhead_ratio"] == 0.25
     assert row["exact_match_rate"] == 0.5

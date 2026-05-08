@@ -1,6 +1,7 @@
 import csv
 import json
 
+from artifact_helpers import assert_manifest_has_run_timing
 from diffusion_fec.channels.packet_loss import CHANNEL_BURST, CHANNEL_GILBERT_ELLIOTT
 from diffusion_fec.data.tokenized_samples import write_tokenized_sample_artifact
 from diffusion_fec.experiments.runner import main
@@ -39,6 +40,7 @@ def test_synthetic_sweep_writes_child_runs_and_analysis(tmp_path) -> None:
 
     assert result["manifest"]["run_count"] == 3
     assert manifest["not_a_research_claim"] is True
+    assert_manifest_has_run_timing(manifest)
     assert {row["status"] for row in rows} == {"completed"}
     assert (tmp_path / "runs" / rows[0]["name"] / "run_manifest.json").exists()
     assert (tmp_path / "analysis" / "aggregate.csv").exists()

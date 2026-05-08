@@ -4,13 +4,25 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from time import perf_counter
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
 
+RUN_TIMING_FIELDS = (
+    "run_started_at",
+    "run_finished_at",
+    "run_wall_time_sec",
+)
+
 RESULTS_FIELDNAMES = [
     "run_id",
+    "run_started_at",
+    "run_finished_at",
+    "run_wall_time_sec",
     "case_id",
     "sample_id",
     "model_label",
@@ -74,20 +86,82 @@ RESULTS_FIELDNAMES = [
 ]
 
 
+@dataclass(frozen=True)
+class RunTiming:
+    """Completed wall-clock timing fields for one artifact-writing run."""
+
+    run_started_at: str
+    run_finished_at: str
+    run_wall_time_sec: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_started_at": self.run_started_at,
+            "run_finished_at": self.run_finished_at,
+            "run_wall_time_sec": self.run_wall_time_sec,
+        }
+
+
+@dataclass(frozen=True)
+class RunTimer:
+    """Monotonic timer paired with UTC timestamps for run manifests."""
+
+    run_started_at: str
+    start_perf_counter: float
+
+    def finish(self) -> RunTiming:
+        finished_at = _utc_timestamp()
+        wall_time = max(0.0, perf_counter() - self.start_perf_counter)
+        return RunTiming(
+            run_started_at=self.run_started_at,
+            run_finished_at=finished_at,
+            run_wall_time_sec=wall_time,
+        )
+
+
+def start_run_timer() -> RunTimer:
+    """Start a timer for one run-level artifact bundle."""
+
+    return RunTimer(
+        run_started_at=_utc_timestamp(),
+        start_perf_counter=perf_counter(),
+    )
+
+
 def write_run_artifacts(
     *,
     output_dir: str | Path,
     manifest: dict[str, Any],
     result_rows: Sequence[dict[str, Any]],
     events: Iterable[dict[str, Any]],
-) -> None:
-    """Write manifest, CSV results, and JSONL events."""
+    run_timer: RunTimer | None = None,
+    timing: RunTiming | None = None,
+) -> dict[str, Any]:
+    """Write manifest, CSV results, and JSONL events with run timing fields."""
+
+    if timing is None:
+        timing = (run_timer or start_run_timer()).finish()
+    timing_dict = timing.to_dict()
+    timed_manifest = {**manifest, **timing_dict}
+    timed_rows = [
+        {**dict(row), **timing_dict}
+        for row in result_rows
+    ]
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    _write_json(output_path / "run_manifest.json", manifest)
-    _write_results_csv(output_path / "results.csv", result_rows)
+    _write_json(output_path / "run_manifest.json", timed_manifest)
+    _write_results_csv(output_path / "results.csv", timed_rows)
     _write_jsonl(output_path / "events.jsonl", events)
+    return {
+        "manifest": timed_manifest,
+        "result_rows": timed_rows,
+        "timing": timing_dict,
+    }
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:

@@ -17,6 +17,7 @@ NUMERIC_MEAN_FIELDS = (
     "known_position_count",
     "remaining_mask_token_count",
     "decode_latency_sec",
+    "run_wall_time_sec",
     "model_forward_calls",
     "hash_metadata_count",
     "hash_metadata_bit_count",

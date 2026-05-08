@@ -1,6 +1,12 @@
 import csv
 import json
 
+from artifact_helpers import (
+    assert_manifest_has_run_timing,
+    assert_row_has_run_timing,
+    normalized_artifact_text,
+    strip_run_timing_from_rows,
+)
 from diffusion_fec.experiments.runner import run_minimal_smoke, main
 
 
@@ -39,7 +45,7 @@ def test_minimal_smoke_runner_writes_expected_artifacts(tmp_path) -> None:
     assert (output_dir / "events.jsonl").exists()
 
 
-def test_manifest_labels_fake_model_and_strategy_without_timestamps_or_paths(tmp_path) -> None:
+def test_manifest_labels_fake_model_and_strategy_with_run_timing(tmp_path) -> None:
     output_dir = tmp_path / "run"
 
     run_minimal_smoke(output_dir=output_dir, sample_count=1, seed=7)
@@ -52,6 +58,7 @@ def test_manifest_labels_fake_model_and_strategy_without_timestamps_or_paths(tmp
     assert manifest["config"]["protection_mode"] == "lookback_1"
     assert manifest["config"]["oracle_hash_metadata"] is False
     assert "created_at" not in manifest
+    assert_manifest_has_run_timing(manifest)
     assert str(output_dir) not in json.dumps(manifest)
 
 
@@ -75,6 +82,7 @@ def test_results_csv_includes_metrics_and_run_metadata(tmp_path) -> None:
     assert int(first["model_proposal_calls"]) > 0
     assert first["decoder_proposal_mode"] == "model_propose_token"
     assert first["proposal_interface_used"] == "True"
+    assert_row_has_run_timing(first)
 
 
 def test_events_jsonl_contains_detailed_case_data_and_normalized_latency(tmp_path) -> None:
@@ -105,9 +113,9 @@ def test_runner_output_is_deterministic_for_same_seed(tmp_path) -> None:
     run_minimal_smoke(output_dir=second_dir, sample_count=3, seed=11)
 
     for filename in ("run_manifest.json", "results.csv", "events.jsonl"):
-        assert (first_dir / filename).read_text(encoding="utf-8") == (
+        assert normalized_artifact_text(first_dir / filename) == normalized_artifact_text(
             second_dir / filename
-        ).read_text(encoding="utf-8")
+        )
 
 
 def test_runner_cli_entrypoint_writes_artifacts(tmp_path) -> None:
@@ -155,7 +163,9 @@ def test_runner_can_build_and_reuse_hash_profile(tmp_path) -> None:
     assert second_manifest["hash_profile"]["source"] == "loaded_profile"
     assert (profile_dir / "uniform_hash4_map.npy").exists()
     assert (profile_dir / "hash_profile_metadata.json").exists()
-    assert read_csv(first_dir / "results.csv") == read_csv(second_dir / "results.csv")
+    assert strip_run_timing_from_rows(read_csv(first_dir / "results.csv")) == (
+        strip_run_timing_from_rows(read_csv(second_dir / "results.csv"))
+    )
 
 
 def test_runner_cli_can_build_hash_profile(tmp_path) -> None:

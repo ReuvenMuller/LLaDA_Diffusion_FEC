@@ -333,8 +333,11 @@ write_aggregate_csv(output_path="runs/aggregate.csv", rows=aggregate)
 ```
 
 The aggregate helper reports case counts, exact-match rate, known-position
-preservation rate, mean recovery/edit metrics, mean latency, mean model forward
-calls, and mean repair overhead where those fields are present.
+preservation rate, mean recovery/edit metrics, mean per-case decode latency,
+mean whole-run wall time, mean model forward calls, and mean repair overhead
+where those fields are present. `decode_latency_sec` is per case; top-level
+manifest fields `run_started_at`, `run_finished_at`, and `run_wall_time_sec`
+describe the whole artifact-writing run.
 
 ## Synthetic Sweeps And Reports
 

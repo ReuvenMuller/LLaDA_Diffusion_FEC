@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from artifact_helpers import assert_manifest_has_run_timing, assert_row_has_run_timing
 from diffusion_fec.coding.hash_profiles import build_and_save_hash_profile
 from diffusion_fec.data.tokenized_samples import write_tokenized_sample_artifact
 from diffusion_fec.experiments.llada_micro_eval import (
@@ -157,6 +158,7 @@ def test_real_llada_micro_eval_model_hash_writes_artifacts_from_loaded_profile(t
     assert manifest["not_a_research_claim"] is True
     assert manifest["preflight"]["tiny_forward_shape"] == [1, 1, 32]
     assert manifest["hash_profile"]["source"] == "loaded_profile"
+    assert_manifest_has_run_timing(manifest)
     assert rows[0]["strategy"] == "LLaDA_MicroEval_LoadedHashLookback1_NoPrompt"
     assert rows[0]["hash_profile_source"] == "loaded_profile"
     assert rows[0]["known_count"] == "1"
@@ -168,6 +170,7 @@ def test_real_llada_micro_eval_model_hash_writes_artifacts_from_loaded_profile(t
     assert rows[0]["model_forward_calls"] == "1"
     assert rows[0]["decoder_steps"] == "1"
     assert rows[0]["decode_latency_sec"]
+    assert_row_has_run_timing(rows[0])
     assert events[0]["event_type"] == "real_llada_micro_eval_case"
     assert events[0]["case"]["oracle_hash_metadata"] is False
 

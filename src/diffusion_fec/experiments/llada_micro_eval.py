@@ -35,7 +35,7 @@ from diffusion_fec.experiments.llada_smoke import (
     _load_tokenizer_config,
     _run_tiny_forward,
 )
-from diffusion_fec.experiments.logging import write_run_artifacts
+from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
 from diffusion_fec.experiments.micro_eval import (
     MICRO_EVAL_MODEL_HASH,
     MICRO_EVAL_MODEL_ONLY,
@@ -91,6 +91,7 @@ def run_real_llada_micro_eval(
     This runner intentionally does not live-build hash maps.
     """
 
+    run_timer = start_run_timer()
     source_layout = source_layout or SourceLayoutConfig()
     wire_interleaving = wire_interleaving or WireInterleavingConfig()
     channel_config = channel_config or PacketLossChannelConfig(
@@ -257,16 +258,17 @@ def run_real_llada_micro_eval(
             }
         )
 
-    write_run_artifacts(
+    artifact_data = write_run_artifacts(
         output_dir=output_dir,
         manifest=manifest,
         result_rows=result_rows,
         events=events,
+        run_timer=run_timer,
     )
     return {
         "run_id": run_id,
-        "manifest": manifest,
-        "result_rows": result_rows,
+        "manifest": artifact_data["manifest"],
+        "result_rows": artifact_data["result_rows"],
         "events": events,
     }
 
