@@ -39,6 +39,7 @@ def test_build_analysis_artifacts_writes_summary_plots_and_failures(tmp_path) ->
         encoding="utf-8"
     )
     assert "<svg" in (analysis_dir / "exact_match_rate.svg").read_text(encoding="utf-8")
+    assert "<svg" in (analysis_dir / "total_overhead_ratio.svg").read_text(encoding="utf-8")
     failures = read_jsonl(analysis_dir / "failure_examples.jsonl")
     assert failures[0]["case_id"] == "case0001"
     assert failures[0]["dropped_wire_ids"] == [1]
@@ -83,6 +84,7 @@ def test_report_cli_entrypoint(tmp_path) -> None:
 
     assert exit_code == 0
     assert read_json(output_dir / "analysis_manifest.json")["aggregate_row_count"] == 1
+    assert (output_dir / "total_overhead_ratio.svg").exists()
     assert (output_dir / "repair_overhead_ratio.svg").exists()
 
 
@@ -104,6 +106,9 @@ def _write_results_csv(path) -> None:
                 "lost_position_recovery_rate",
                 "remaining_mask_token_count",
                 "decode_latency_sec",
+                "hash_metadata_token_equivalent_overhead_ratio",
+                "actual_repair_token_overhead_ratio",
+                "total_overhead_ratio",
             ],
         )
         writer.writeheader()
@@ -122,6 +127,9 @@ def _write_results_csv(path) -> None:
                 "lost_position_recovery_rate": "1.0",
                 "remaining_mask_token_count": "0",
                 "decode_latency_sec": "0.0",
+                "hash_metadata_token_equivalent_overhead_ratio": "0.0",
+                "actual_repair_token_overhead_ratio": "0.0",
+                "total_overhead_ratio": "0.0",
             }
         )
         writer.writerow(
@@ -139,6 +147,9 @@ def _write_results_csv(path) -> None:
                 "lost_position_recovery_rate": "0.0",
                 "remaining_mask_token_count": "1",
                 "decode_latency_sec": "0.0",
+                "hash_metadata_token_equivalent_overhead_ratio": "0.0",
+                "actual_repair_token_overhead_ratio": "0.0",
+                "total_overhead_ratio": "0.0",
             }
         )
 

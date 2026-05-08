@@ -177,6 +177,9 @@ python -m diffusion_fec.experiments.runner `
   --ge-bad-to-good-rate 0.5
 ```
 
+The synthetic sweep driver also supports `--channel gilbert_elliott` and passes
+the same `--ge-*` parameters into each child run.
+
 Current opt-in real LLaDA synthetic micro-eval:
 
 ```powershell
@@ -337,6 +340,12 @@ python -m diffusion_fec.analysis.report `
 The report bundle includes aggregate CSVs, a markdown summary, SVG metric plots,
 and compact failure examples. These outputs summarize the provided artifacts;
 they do not convert smoke or micro-eval runs into research claims.
+
+For matched-overhead comparisons, use `total_overhead_ratio`. Model+hash rows
+report transmitted lookback metadata via `hash_metadata_bit_count`,
+`hash_metadata_token_equivalent_overhead_ratio`, and `total_overhead_ratio`.
+Classical rows report repair packets through `actual_repair_token_overhead_ratio`
+and the same `total_overhead_ratio` column.
 
 ## Correctness Checks For Smoke Output
 

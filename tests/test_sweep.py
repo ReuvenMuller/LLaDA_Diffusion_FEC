@@ -1,7 +1,7 @@
 import csv
 import json
 
-from diffusion_fec.channels.packet_loss import CHANNEL_BURST
+from diffusion_fec.channels.packet_loss import CHANNEL_BURST, CHANNEL_GILBERT_ELLIOTT
 from diffusion_fec.experiments.runner import main
 from diffusion_fec.experiments.sweep import (
     SWEEP_RUNNER_MODEL_HASH,
@@ -85,3 +85,38 @@ def test_synthetic_sweep_cli_entrypoint(tmp_path) -> None:
     assert len(rows) == 4
     assert CHANNEL_BURST in (output_dir / "sweep_manifest.json").read_text(encoding="utf-8")
     assert (output_dir / "analysis" / "analysis_manifest.json").exists()
+
+
+def test_synthetic_sweep_cli_allows_gilbert_elliott(tmp_path) -> None:
+    output_dir = tmp_path / "ge_sweep"
+
+    exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--synthetic-sweep",
+            "--sample-lengths",
+            "4",
+            "--tokens-per-packet",
+            "2",
+            "--sweep-runners",
+            SWEEP_RUNNER_MODEL_ONLY,
+            "--channel",
+            CHANNEL_GILBERT_ELLIOTT,
+            "--ge-good-loss-rate",
+            "0.0",
+            "--ge-bad-loss-rate",
+            "1.0",
+            "--ge-good-to-bad-rate",
+            "1.0",
+            "--ge-bad-to-good-rate",
+            "0.0",
+        ]
+    )
+
+    rows = read_csv(output_dir / "sweep_runs.csv")
+    child_results = read_csv(output_dir / rows[0]["results"])
+
+    assert exit_code == 0
+    assert len(rows) == 1
+    assert child_results[0]["channel_mode"] == CHANNEL_GILBERT_ELLIOTT

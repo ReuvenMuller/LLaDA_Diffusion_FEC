@@ -59,6 +59,8 @@ def test_xor_parity_micro_eval_writes_artifacts_and_repairs_single_loss(tmp_path
     assert rows[0]["repair_packet_count"] == "2"
     assert rows[0]["repair_token_budget"] == "4"
     assert rows[0]["target_overhead_ratio"] == str(4 / 7)
+    assert rows[0]["hash_metadata_bit_count"] == "0"
+    assert rows[0]["total_overhead_ratio"] == rows[0]["actual_repair_token_overhead_ratio"]
     assert events[0]["event_type"] == "xor_parity_micro_eval_case"
     assert events[0]["metrics"]["exact_match"] is True
 

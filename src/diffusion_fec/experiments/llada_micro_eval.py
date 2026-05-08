@@ -6,6 +6,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
+from diffusion_fec.baselines.overhead import (
+    metadata_token_equivalent_overhead_ratio,
+    token_bit_width_for_vocab,
+    token_equivalent_overhead,
+)
 from diffusion_fec.channels.packet_loss import (
     CHANNEL_RANDOM_IID,
     PacketLossChannelConfig,
@@ -20,7 +25,7 @@ from diffusion_fec.coding.hash_profiles import (
     load_hash_profile_metadata,
 )
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
-from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME
+from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME, LOOKBACK_HASH_METADATA_KEY
 from diffusion_fec.experiments.llada_smoke import (
     RealLLaDASmokeUnavailable,
     _import_torch,
@@ -525,6 +530,12 @@ def _result_row(
 ) -> dict[str, Any]:
     plan = case.reconstruction_plan
     diagnostics = case.decoding_result.diagnostics
+    packet_count = len(case.loss_result.received) + len(case.loss_result.dropped)
+    overhead = _hash_metadata_overhead(
+        case=case,
+        hash_bits=hash_bits,
+        vocab_size=case.decoding_result.diagnostics["config"]["vocab_size"],
+    )
     return {
         "run_id": run_id,
         "case_id": case_id,
@@ -556,9 +567,70 @@ def _result_row(
         "unguided_count": plan.unguided_count,
         "received_packet_count": len(case.loss_result.received),
         "dropped_packet_count": len(case.loss_result.dropped),
+        "source_packet_count": packet_count,
+        "extra_packet_count": 0,
+        "repair_packet_count": 0,
+        "repair_token_budget": 0,
+        "target_overhead_ratio": overhead["hash_metadata_token_equivalent_overhead_ratio"],
+        "actual_repair_token_overhead_ratio": 0.0,
+        "token_bit_width": overhead["token_bit_width"],
+        "hash_metadata_count": overhead["hash_metadata_count"],
+        "hash_metadata_bit_count": overhead["hash_metadata_bit_count"],
+        "hash_metadata_token_equivalent": overhead["hash_metadata_token_equivalent"],
+        "hash_metadata_token_equivalent_overhead_ratio": overhead[
+            "hash_metadata_token_equivalent_overhead_ratio"
+        ],
+        "total_overhead_ratio": overhead["hash_metadata_token_equivalent_overhead_ratio"],
         "hash_profile_source": hash_profile_info.get("source"),
         "decode_latency_sec": case.decoding_result.decode_latency_sec,
         "decoder_steps": case.decoding_result.steps,
         "model_forward_calls": diagnostics.get("model_forward_calls"),
         **case.metrics.to_dict(),
     }
+
+
+def _hash_metadata_overhead(
+    *,
+    case: SmokeRecoveryCase,
+    hash_bits: int,
+    vocab_size: int,
+) -> dict[str, Any]:
+    metadata_count = _transmitted_hash_metadata_count(case)
+    metadata_bits = metadata_count * hash_bits
+    token_bit_width = token_bit_width_for_vocab(vocab_size)
+    token_equivalent = token_equivalent_overhead(
+        metadata_bits=metadata_bits,
+        vocab_size=vocab_size,
+    )
+    ratio = metadata_token_equivalent_overhead_ratio(
+        metadata_bits=metadata_bits,
+        total_tokens=len(case.sample.token_ids),
+        vocab_size=vocab_size,
+    )
+    return {
+        "token_bit_width": token_bit_width,
+        "hash_metadata_count": metadata_count,
+        "hash_metadata_bit_count": metadata_bits,
+        "hash_metadata_token_equivalent": token_equivalent,
+        "hash_metadata_token_equivalent_overhead_ratio": ratio,
+    }
+
+
+def _transmitted_hash_metadata_count(case: SmokeRecoveryCase) -> int:
+    if case.protection_mode != LOOKBACK_1_SCHEME:
+        return 0
+    return sum(
+        _packet_hash_metadata_count(packet)
+        for packet in (*case.loss_result.received, *case.loss_result.dropped)
+    )
+
+
+def _packet_hash_metadata_count(packet) -> int:
+    raw_metadata = packet.metadata.get(LOOKBACK_HASH_METADATA_KEY)
+    if raw_metadata is None:
+        return 0
+    if isinstance(raw_metadata, dict):
+        hashes = raw_metadata.get("hashes", ())
+        return len(hashes)
+    hashes = getattr(raw_metadata, "hashes", ())
+    return len(tuple(hashes))

@@ -105,3 +105,7 @@ python -m diffusion_fec.experiments.runner `
 The sweep writes child run artifacts plus `analysis/aggregate.csv`,
 `analysis/summary.md`, SVG metric plots, and `analysis/failure_examples.jsonl`.
 It is still synthetic engineering validation, not a research result.
+
+Use `total_overhead_ratio` in aggregate outputs for comparable overhead. It
+charges model+hash runs for transmitted lookback metadata and classical runs for
+repair-token budget.

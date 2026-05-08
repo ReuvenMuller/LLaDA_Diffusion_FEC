@@ -60,6 +60,9 @@ def test_model_only_micro_eval_writes_unguided_artifacts(tmp_path) -> None:
     assert rows[0]["protection_mode"] == "none"
     assert rows[0]["hash_guided_count"] == "0"
     assert rows[0]["unguided_count"] == "8"
+    assert rows[0]["hash_metadata_count"] == "0"
+    assert rows[0]["hash_metadata_bit_count"] == "0"
+    assert float(rows[0]["total_overhead_ratio"]) == 0.0
     assert events[0]["case"]["hash_metadata"] == {}
     assert events[0]["case"]["oracle_hash_metadata"] is False
 
@@ -87,8 +90,35 @@ def test_model_hash_micro_eval_uses_only_transmitted_lookback_metadata(tmp_path)
     assert rows[0]["known_count"] == "1"
     assert rows[0]["hash_guided_count"] == "1"
     assert rows[0]["unguided_count"] == "0"
+    assert rows[0]["hash_metadata_count"] == "1"
+    assert rows[0]["hash_metadata_bit_count"] == "4"
+    assert float(rows[0]["hash_metadata_token_equivalent_overhead_ratio"]) > 0.0
+    assert rows[0]["total_overhead_ratio"] == rows[0]["hash_metadata_token_equivalent_overhead_ratio"]
     assert events[0]["case"]["oracle_hash_metadata"] is False
     assert list(events[0]["case"]["hash_metadata"]) == ["0"]
+
+
+def test_model_hash_micro_eval_counts_full_transmitted_lookback_overhead(tmp_path) -> None:
+    output_dir = tmp_path / "hash_overhead"
+
+    run_synthetic_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        loss_rate=1.0,
+        seed=0,
+        tokens_per_packet=4,
+        mode=MICRO_EVAL_MODEL_HASH,
+        hash_bits=4,
+        vocab_size=128,
+    )
+
+    rows = read_csv(output_dir / "results.csv")
+
+    assert rows[0]["hash_metadata_count"] == "4"
+    assert rows[0]["hash_metadata_bit_count"] == "16"
+    assert rows[0]["token_bit_width"] == "7"
+    assert float(rows[0]["hash_metadata_token_equivalent"]) == 16 / 7
+    assert float(rows[0]["total_overhead_ratio"]) == (16 / 7) / 8
 
 
 def test_micro_eval_output_is_deterministic_for_same_seed(tmp_path) -> None:

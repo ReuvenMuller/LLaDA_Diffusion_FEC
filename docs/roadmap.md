@@ -37,6 +37,8 @@ Done:
 - deterministic synthetic sweep orchestration for the main comparison set
 - analysis report artifacts: aggregate CSV, markdown summary, SVG metric plots,
   and qualitative failure examples
+- comparable overhead accounting across model+hash metadata and classical repair
+  packets via `total_overhead_ratio`
 - research runbook with local, server, profile, and final experiment conventions
 
 Not done:
@@ -203,6 +205,7 @@ Recommended next operations:
 - run classical matched-overhead synthetic or dataset-backed baselines with the
   same channel/interleaving settings
 - aggregate all run roots with `python -m diffusion_fec.analysis.report`
+- compare overhead with `total_overhead_ratio`, not repair overhead alone
 - inspect `failure_examples.jsonl` before making research claims
 
 Acceptance:

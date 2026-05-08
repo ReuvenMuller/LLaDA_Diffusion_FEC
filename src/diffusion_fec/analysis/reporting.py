@@ -35,7 +35,9 @@ SUMMARY_FIELDS = (
     "known_position_preserved_rate",
     "mean_decode_latency_sec",
     "mean_model_forward_calls",
+    "mean_hash_metadata_token_equivalent_overhead_ratio",
     "mean_actual_repair_token_overhead_ratio",
+    "mean_total_overhead_ratio",
 )
 PLOT_SPECS = (
     ("exact_match_rate.svg", "Exact Match Rate", "exact_match_rate"),
@@ -45,6 +47,7 @@ PLOT_SPECS = (
         "mean_lost_position_recovery_rate",
     ),
     ("decode_latency_sec.svg", "Mean Decode Latency Sec", "mean_decode_latency_sec"),
+    ("total_overhead_ratio.svg", "Mean Total Overhead Ratio", "mean_total_overhead_ratio"),
     (
         "repair_overhead_ratio.svg",
         "Mean Repair Token Overhead Ratio",

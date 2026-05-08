@@ -98,8 +98,15 @@ The analysis writer discovers `results.csv` and `events.jsonl`, then writes:
 - `lost_position_recovery_rate.svg`
 - `decode_latency_sec.svg`
 - `repair_overhead_ratio.svg`
+- `total_overhead_ratio.svg`
 - `failure_examples.jsonl`
 - `analysis_manifest.json`
+
+Use `total_overhead_ratio` for strategy comparison. It combines classical
+repair-token overhead with transmitted hash metadata token-equivalent overhead.
+The model+hash path reports `hash_metadata_bit_count`,
+`hash_metadata_token_equivalent_overhead_ratio`, and `total_overhead_ratio` so
+lookback metadata is not treated as free.
 
 ## Frozen Real-Run Conventions
 
@@ -133,6 +140,7 @@ Every real run should record:
 - sample lengths or dataset sample IDs
 - decoder steps
 - latency and model forward calls
+- hash metadata bit budget and total token-equivalent overhead
 
 ## Server Real LLaDA Micro-Evals
 

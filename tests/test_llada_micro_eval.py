@@ -157,6 +157,10 @@ def test_real_llada_micro_eval_model_hash_writes_artifacts_from_loaded_profile(t
     assert rows[0]["hash_profile_source"] == "loaded_profile"
     assert rows[0]["known_count"] == "1"
     assert rows[0]["hash_guided_count"] == "1"
+    assert rows[0]["hash_metadata_count"] == "1"
+    assert rows[0]["hash_metadata_bit_count"] == "4"
+    assert rows[0]["token_bit_width"] == "5"
+    assert float(rows[0]["total_overhead_ratio"]) == 0.4
     assert rows[0]["model_forward_calls"] == "1"
     assert rows[0]["decoder_steps"] == "1"
     assert rows[0]["decode_latency_sec"]
@@ -190,6 +194,8 @@ def test_real_llada_micro_eval_model_only_does_not_require_profile(tmp_path) -> 
     assert rows[0]["protection_mode"] == "none"
     assert rows[0]["hash_guided_count"] == "0"
     assert rows[0]["unguided_count"] == "2"
+    assert rows[0]["hash_metadata_count"] == "0"
+    assert float(rows[0]["total_overhead_ratio"]) == 0.0
 
 
 def test_runner_routes_real_llada_micro_eval_without_loading_model(monkeypatch, tmp_path) -> None:

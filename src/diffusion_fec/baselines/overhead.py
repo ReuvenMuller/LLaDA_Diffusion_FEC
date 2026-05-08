@@ -43,6 +43,34 @@ def repair_token_overhead_ratio(
     return (repair_packet_count * tokens_per_packet) / total_tokens
 
 
+def token_equivalent_overhead(
+    *,
+    metadata_bits: int,
+    vocab_size: int,
+) -> float:
+    """Convert metadata bits to token-equivalent budget."""
+
+    _validate_nonnegative_int(metadata_bits, "metadata_bits")
+    return metadata_bits / token_bit_width_for_vocab(vocab_size)
+
+
+def metadata_token_equivalent_overhead_ratio(
+    *,
+    metadata_bits: int,
+    total_tokens: int,
+    vocab_size: int,
+) -> float:
+    """Return metadata bit budget as token-equivalent ratio."""
+
+    _validate_nonnegative_int(total_tokens, "total_tokens")
+    if total_tokens == 0:
+        return 0.0
+    return token_equivalent_overhead(
+        metadata_bits=metadata_bits,
+        vocab_size=vocab_size,
+    ) / total_tokens
+
+
 def select_closest_repair_count(
     *,
     total_tokens: int,

@@ -313,8 +313,6 @@ def main(argv: list[str] | None = None) -> int:
             run_synthetic_sweep,
         )
 
-        if args.channel == CHANNEL_GILBERT_ELLIOTT:
-            parser.error("--synthetic-sweep currently supports random_iid and burst channels")
         source_layouts = (
             default_interleaving_source_layouts()
             if args.sweep_include_interleaving_variants
@@ -326,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
             else (_wire_interleaving_from_args(args),)
         )
         channel_modes = (
-            (CHANNEL_RANDOM_IID, CHANNEL_BURST)
+            tuple(dict.fromkeys((CHANNEL_RANDOM_IID, CHANNEL_BURST, args.channel)))
             if args.sweep_include_burst
             else (args.channel,)
         )
@@ -345,6 +343,11 @@ def main(argv: list[str] | None = None) -> int:
             wire_interleavings=wire_interleavings,
             channel_modes=channel_modes,
             burst_length=1 if args.burst_length is None else args.burst_length,
+            ge_good_loss_rate=args.ge_good_loss_rate,
+            ge_bad_loss_rate=args.ge_bad_loss_rate,
+            ge_good_to_bad_rate=args.ge_good_to_bad_rate,
+            ge_bad_to_good_rate=args.ge_bad_to_good_rate,
+            ge_initial_state=args.ge_initial_state,
         )
         run_synthetic_sweep(
             output_dir=args.output_dir,

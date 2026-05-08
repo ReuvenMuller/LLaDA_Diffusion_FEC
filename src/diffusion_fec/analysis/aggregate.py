@@ -18,7 +18,12 @@ NUMERIC_MEAN_FIELDS = (
     "remaining_mask_token_count",
     "decode_latency_sec",
     "model_forward_calls",
+    "hash_metadata_count",
+    "hash_metadata_bit_count",
+    "hash_metadata_token_equivalent",
+    "hash_metadata_token_equivalent_overhead_ratio",
     "actual_repair_token_overhead_ratio",
+    "total_overhead_ratio",
 )
 BOOLEAN_RATE_FIELDS = (
     "exact_match",

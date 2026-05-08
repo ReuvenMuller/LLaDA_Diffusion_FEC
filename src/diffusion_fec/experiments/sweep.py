@@ -11,6 +11,7 @@ from typing import Any, Sequence
 from diffusion_fec.analysis.reporting import build_analysis_artifacts
 from diffusion_fec.channels.packet_loss import (
     CHANNEL_BURST,
+    CHANNEL_GILBERT_ELLIOTT,
     CHANNEL_RANDOM_IID,
     PacketLossChannelConfig,
 )
@@ -137,6 +138,11 @@ def build_synthetic_sweep_config(
     wire_interleavings: Sequence[WireInterleavingConfig] | None = None,
     channel_modes: Sequence[str] = (CHANNEL_RANDOM_IID,),
     burst_length: int = 2,
+    ge_good_loss_rate: float = 0.0,
+    ge_bad_loss_rate: float = 1.0,
+    ge_good_to_bad_rate: float = 0.05,
+    ge_bad_to_good_rate: float = 0.5,
+    ge_initial_state: str = "good",
 ) -> SyntheticSweepConfig:
     """Build a compact model-free sweep covering selected strategies and geometry."""
 
@@ -155,6 +161,11 @@ def build_synthetic_sweep_config(
                             loss_rate=loss_rate,
                             seed=seed,
                             burst_length=burst_length,
+                            ge_good_loss_rate=ge_good_loss_rate,
+                            ge_bad_loss_rate=ge_bad_loss_rate,
+                            ge_good_to_bad_rate=ge_good_to_bad_rate,
+                            ge_bad_to_good_rate=ge_bad_to_good_rate,
+                            ge_initial_state=ge_initial_state,
                         )
                         specs.append(
                             SweepRunSpec(
@@ -357,6 +368,11 @@ def _channel_config(
     loss_rate: float,
     seed: int,
     burst_length: int,
+    ge_good_loss_rate: float,
+    ge_bad_loss_rate: float,
+    ge_good_to_bad_rate: float,
+    ge_bad_to_good_rate: float,
+    ge_initial_state: str,
 ) -> PacketLossChannelConfig:
     if channel_mode == CHANNEL_RANDOM_IID:
         return PacketLossChannelConfig(mode=CHANNEL_RANDOM_IID, loss_rate=loss_rate, seed=seed)
@@ -368,7 +384,18 @@ def _channel_config(
             burst_start_wire_id=0,
             burst_length=burst_length,
         )
-    raise ValueError("synthetic sweep supports random_iid and burst channels")
+    if channel_mode == CHANNEL_GILBERT_ELLIOTT:
+        return PacketLossChannelConfig(
+            mode=CHANNEL_GILBERT_ELLIOTT,
+            loss_rate=loss_rate,
+            seed=seed,
+            good_loss_rate=ge_good_loss_rate,
+            bad_loss_rate=ge_bad_loss_rate,
+            good_to_bad_rate=ge_good_to_bad_rate,
+            bad_to_good_rate=ge_bad_to_good_rate,
+            initial_state=ge_initial_state,
+        )
+    raise ValueError("synthetic sweep supports random_iid, burst, and gilbert_elliott channels")
 
 
 def _spec_name(
