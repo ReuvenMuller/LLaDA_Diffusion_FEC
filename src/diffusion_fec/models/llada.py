@@ -39,7 +39,7 @@ class LLaDAAdapter:
         """Load tokenizer and optionally model weights from Hugging Face."""
 
         try:
-            from transformers import AutoConfig, AutoModel, AutoTokenizer
+            from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
         except ImportError as exc:
             raise ImportError(
                 "Install Hugging Face dependencies with `pip install -e .[hf]` "
@@ -59,7 +59,7 @@ class LLaDAAdapter:
             load_options.update(_default_model_kwargs())
             load_options["config"] = config
             load_options.update(model_kwargs or {})
-            model = AutoModel.from_pretrained(model_id, **load_options)
+            model = AutoModelForCausalLM.from_pretrained(model_id, **load_options)
             eval_method = getattr(model, "eval", None)
             if callable(eval_method):
                 eval_method()

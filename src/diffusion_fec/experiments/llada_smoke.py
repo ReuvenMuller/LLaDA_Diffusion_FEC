@@ -190,7 +190,7 @@ def _load_model(
             else ""
         )
         raise RealLLaDASmokeUnavailable(
-            f"Could not load LLaDA model weights for {model_id!r}.{cache_hint}"
+            f"Could not load LLaDA model weights for {model_id!r}: {exc}.{cache_hint}"
         ) from exc
 
 
