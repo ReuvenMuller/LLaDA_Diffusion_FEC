@@ -495,7 +495,11 @@ def _load_pretokenized_llada_samples(
         )
     except ValueError as exc:
         raise RealLLaDAMicroEvalUnavailable(str(exc)) from exc
-    _verify_tokenized_samples_against_tokenizer(samples=samples, tokenizer=tokenizer)
+    _verify_tokenized_samples_against_tokenizer(
+        samples=samples,
+        tokenizer=tokenizer,
+        max_tokens=info.get("max_tokens"),
+    )
     info = dict(info)
     info["tokenizer_verification"] = "matched_current_llada_tokenizer"
     return samples, info
@@ -505,9 +509,14 @@ def _verify_tokenized_samples_against_tokenizer(
     *,
     samples: Sequence[TokenSample],
     tokenizer: LLaDAAdapter,
+    max_tokens: Any,
 ) -> None:
+    token_cap = None if max_tokens is None else int(max_tokens)
     for sample in samples:
-        expected = tuple(tokenizer.tokenize(sample.text, add_special_tokens=False))
+        expected_tokens = tokenizer.tokenize(sample.text, add_special_tokens=False)
+        if token_cap is not None:
+            expected_tokens = expected_tokens[:token_cap]
+        expected = tuple(expected_tokens)
         if expected != sample.token_ids:
             raise RealLLaDAMicroEvalUnavailable(
                 "Pre-tokenized sample artifact does not match the current LLaDA "

@@ -253,7 +253,7 @@ def test_real_llada_micro_eval_uses_pretokenized_samples(tmp_path) -> None:
             [
                 {
                     "id": "wiki_0",
-                    "original_message": "abcd",
+                    "original_message": "abcdef",
                     "word_count": 1,
                 }
             ]
