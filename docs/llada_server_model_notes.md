@@ -152,3 +152,45 @@ python -m diffusion_fec.experiments.runner \
 Use `--micro-eval-mode model_only` to run the matching model-only path without a
 hash profile. These micro-evals are engineering validation only, not research
 claims.
+
+## Successful Real Micro-Eval Runs
+
+After adding the real micro-eval runner, the server checkout was updated to
+commit `fce3810` and two opt-in synthetic micro-evals were run on GPU 6.
+
+Loaded-profile model+hash artifact directory:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_micro_eval_hash4_gpu6
+```
+
+Summary:
+
+- strategy: `LLaDA_MicroEval_LoadedHashLookback1_NoPrompt`
+- profile source: `loaded_profile`
+- sample length: `8`
+- known positions: `4`
+- hash-guided erased positions: `2`
+- unguided erased positions: `2`
+- decoder model forward calls: `2`
+- known positions preserved: `True`
+
+Model-only artifact directory:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_micro_eval_model_only_gpu6
+```
+
+Summary:
+
+- strategy: `LLaDA_MicroEval_ModelOnly_NoPrompt`
+- profile source: `not_used`
+- sample length: `8`
+- known positions: `4`
+- hash-guided erased positions: `0`
+- unguided erased positions: `4`
+- decoder model forward calls: `2`
+- known positions preserved: `True`
+
+Both runs are still engineering validation only. The synthetic token sequence is
+too small to support research conclusions.

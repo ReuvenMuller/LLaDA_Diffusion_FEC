@@ -25,10 +25,11 @@ Done:
 - model-free synthetic micro-eval runner with model-only and model+hash modes
 - opt-in real LLaDA synthetic micro-eval runner with loaded-profile enforcement
 - runner-integrated packet-loss channels: IID, burst, and Gilbert-Elliott
+- profile-backed real LLaDA micro-eval executed on the GPU server for model-only
+  and model+hash modes
 
 Not done:
 
-- real LLaDA micro-eval execution on the GPU server after this runner update
 - real text dataset sampling
 - classical matched-overhead baselines
 - larger server sweeps
@@ -176,13 +177,12 @@ Freeze configs and hash profiles before final research runs.
 
 ## Immediate Next Phase
 
-Run the real micro-eval on the GPU server, then begin Phase 5:
+Begin Phase 5:
 
-- pull the latest repository on the GPU server
-- run the loaded-profile real LLaDA micro-eval in both model-only and model+hash modes
-- inspect artifacts for latency, model-forward counts, and erased-token geometry
 - start classical matched-overhead baseline implementation with isolated modules
 - add overhead accounting shared by LLaDA hash modes and classical baselines
+- implement XOR parity first as the smallest matched-overhead baseline
+- keep LT/fountain and streaming-window baselines in separate follow-up slices
 
 Acceptance:
 
