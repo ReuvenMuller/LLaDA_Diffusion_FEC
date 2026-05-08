@@ -240,6 +240,19 @@ python -m diffusion_fec.experiments.runner `
 Add `--lt-coverage-aware` to force the LT repair scheduler to cover every source
 packet when its repair budget allows.
 
+Streaming-window baseline micro-eval:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\streaming_window_micro_eval `
+  --streaming-window-micro-eval `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --hash-bits 4 `
+  --stream-window-size 5 `
+  --stream-window-stride 1
+```
+
 Current opt-in pytest smoke:
 
 ```powershell

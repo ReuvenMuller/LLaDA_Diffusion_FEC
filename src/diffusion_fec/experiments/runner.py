@@ -209,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--micro-eval", action="store_true")
     parser.add_argument("--xor-parity-micro-eval", action="store_true")
     parser.add_argument("--lt-fountain-micro-eval", action="store_true")
+    parser.add_argument("--streaming-window-micro-eval", action="store_true")
     parser.add_argument("--real-llada-smoke", action="store_true")
     parser.add_argument("--real-llada-micro-eval", action="store_true")
     parser.add_argument("--llada-model-id", default="GSAI-ML/LLaDA-1.5")
@@ -269,19 +270,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lt-repair-rate", type=float, default=0.25)
     parser.add_argument("--lt-random-seed", type=int, default=7)
     parser.add_argument("--lt-coverage-aware", action="store_true")
+    parser.add_argument("--stream-window-size", type=int, default=5)
+    parser.add_argument("--stream-window-stride", type=int, default=1)
     args = parser.parse_args(argv)
 
     selected_runners = [
         args.micro_eval,
         args.xor_parity_micro_eval,
         args.lt_fountain_micro_eval,
+        args.streaming_window_micro_eval,
         args.real_llada_smoke,
         args.real_llada_micro_eval,
     ]
     if sum(1 for selected in selected_runners if selected) > 1:
         parser.error(
             "--micro-eval, --xor-parity-micro-eval, --lt-fountain-micro-eval, "
-            "--real-llada-smoke, and --real-llada-micro-eval are separate runners"
+            "--streaming-window-micro-eval, --real-llada-smoke, and "
+            "--real-llada-micro-eval are separate runners"
         )
 
     if args.micro_eval:
@@ -350,6 +355,28 @@ def main(argv: list[str] | None = None) -> int:
             repair_rate=args.lt_repair_rate,
             lt_random_seed=args.lt_random_seed,
             coverage_aware=args.lt_coverage_aware,
+        )
+        return 0
+
+    if args.streaming_window_micro_eval:
+        from diffusion_fec.experiments.classical_micro_eval import run_streaming_window_micro_eval
+
+        run_streaming_window_micro_eval(
+            output_dir=args.output_dir,
+            sample_lengths=_parse_sample_lengths(
+                args.sample_lengths,
+                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+            ),
+            loss_rate=args.loss_rate,
+            seed=args.seed,
+            tokens_per_packet=args.tokens_per_packet,
+            hash_bits=args.hash_bits,
+            vocab_size=args.vocab_size,
+            source_layout=_source_layout_from_args(args),
+            wire_interleaving=_wire_interleaving_from_args(args),
+            channel_config=_channel_config_from_args(args),
+            window_size=args.stream_window_size,
+            window_stride=args.stream_window_stride,
         )
         return 0
 

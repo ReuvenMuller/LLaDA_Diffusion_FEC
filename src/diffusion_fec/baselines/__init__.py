@@ -14,6 +14,13 @@ from diffusion_fec.baselines.lt_fountain import (
     encode_lt_fountain,
     reconstruct_lt_fountain,
 )
+from diffusion_fec.baselines.streaming_window import (
+    STREAMING_WINDOW_SCHEME,
+    StreamingWindowConfig,
+    StreamingWindowEncoded,
+    encode_streaming_window,
+    reconstruct_streaming_window,
+)
 from diffusion_fec.baselines.xor_parity import (
     XOR_PARITY_SCHEME,
     XorParityConfig,
@@ -27,14 +34,19 @@ __all__ = [
     "LT_FOUNTAIN_SCHEME",
     "LTFountainConfig",
     "LTFountainEncoded",
+    "STREAMING_WINDOW_SCHEME",
+    "StreamingWindowConfig",
+    "StreamingWindowEncoded",
     "XOR_PARITY_SCHEME",
     "XorParityConfig",
     "XorParityEncoded",
     "encode_xor_parity",
     "encode_lt_fountain",
+    "encode_streaming_window",
     "estimate_hash_overhead_ratio",
     "reconstruct_xor_parity",
     "reconstruct_lt_fountain",
+    "reconstruct_streaming_window",
     "repair_token_overhead_ratio",
     "select_closest_repair_count",
     "token_bit_width_for_vocab",

@@ -31,11 +31,11 @@ Done:
 - XOR parity baseline codec with source-layout and wire-interleaving support
 - XOR parity synthetic micro-eval runner with manifest/results/events artifacts
 - LT/fountain-style baseline codec and synthetic micro-eval runner
+- streaming-window matched-overhead baseline codec and synthetic micro-eval runner
 
 Not done:
 
 - real text dataset sampling
-- streaming-window matched-overhead baseline
 - larger server sweeps
 - aggregation, plots, and final report tables
 
@@ -165,7 +165,7 @@ Reimplement, in this codebase:
 Baseline outputs must use the same artifact interface as LLaDA runs. Baseline
 code should not live in decoder modules.
 
-Status: overhead accounting, XOR parity, and LT/fountain baselines are
+Status: overhead accounting, XOR parity, LT/fountain, and streaming-window baselines are
 implemented with artifact-writing synthetic micro-evals and tests.
 
 ### Phase 6: Datasets, Sweeps, And Analysis
@@ -184,10 +184,12 @@ Freeze configs and hash profiles before final research runs.
 
 ## Immediate Next Phase
 
-Continue Phase 5:
+Begin Phase 6:
 
-- implement streaming-window matched-overhead baseline
-- keep all baseline outputs on the same manifest/results/events interface
+- add deterministic real text sample loading
+- add small sweep commands/configs for fake, real LLaDA, and classical baselines
+- add aggregation scripts for metrics, latency, overhead, and failure examples
+- freeze profile/config conventions before larger server-backed runs
 
 Acceptance:
 

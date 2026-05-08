@@ -18,6 +18,12 @@ from diffusion_fec.baselines.lt_fountain import (
     encode_lt_fountain,
     reconstruct_lt_fountain,
 )
+from diffusion_fec.baselines.streaming_window import (
+    STREAMING_WINDOW_SCHEME,
+    StreamingWindowConfig,
+    encode_streaming_window,
+    reconstruct_streaming_window,
+)
 from diffusion_fec.channels.packet_loss import (
     CHANNEL_RANDOM_IID,
     PacketLossChannelConfig,
@@ -42,6 +48,8 @@ XOR_PARITY_MODEL_LABEL = "ClassicalXORParity"
 XOR_PARITY_BASELINE_FAMILY = "xor_parity"
 LT_FOUNTAIN_MODEL_LABEL = "ClassicalLTFountain"
 LT_FOUNTAIN_BASELINE_FAMILY = "lt_fountain"
+STREAMING_WINDOW_MODEL_LABEL = "ClassicalStreamingWindow"
+STREAMING_WINDOW_BASELINE_FAMILY = "streaming_window"
 
 
 def run_xor_parity_micro_eval(
@@ -348,6 +356,157 @@ def run_lt_fountain_micro_eval(
     }
 
 
+def run_streaming_window_micro_eval(
+    *,
+    output_dir: str | Path,
+    sample_lengths: Sequence[int] = DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+    loss_rate: float = 0.5,
+    seed: int = 0,
+    tokens_per_packet: int = DEFAULT_MICRO_EVAL_TOKENS_PER_PACKET,
+    hash_bits: int = DEFAULT_MICRO_EVAL_HASH_BITS,
+    vocab_size: int = DEFAULT_MICRO_EVAL_VOCAB_SIZE,
+    source_layout: SourceLayoutConfig | None = None,
+    wire_interleaving: WireInterleavingConfig | None = None,
+    channel_config: PacketLossChannelConfig | None = None,
+    window_size: int = 5,
+    window_stride: int = 1,
+) -> dict[str, Any]:
+    """Run deterministic synthetic streaming-window baseline cases and write artifacts."""
+
+    source_layout = source_layout or SourceLayoutConfig()
+    wire_interleaving = wire_interleaving or WireInterleavingConfig()
+    channel_config = channel_config or PacketLossChannelConfig(
+        mode=CHANNEL_RANDOM_IID,
+        loss_rate=loss_rate,
+        seed=seed,
+    )
+    sample_lengths = tuple(sample_lengths)
+    _validate_config(
+        sample_lengths=sample_lengths,
+        loss_rate=loss_rate,
+        tokens_per_packet=tokens_per_packet,
+        hash_bits=hash_bits,
+        vocab_size=vocab_size,
+    )
+    stream_config = StreamingWindowConfig(
+        window_size=window_size,
+        window_stride=window_stride,
+        target_hash_bits=hash_bits,
+        vocab_size=vocab_size,
+    )
+    run_id = _stream_run_id(
+        sample_lengths=sample_lengths,
+        loss_rate=loss_rate,
+        seed=seed,
+        tokens_per_packet=tokens_per_packet,
+        hash_bits=hash_bits,
+        source_layout=source_layout,
+        wire_interleaving=wire_interleaving,
+        channel_config=channel_config,
+        stream_config=stream_config,
+    )
+    manifest = _stream_manifest(
+        run_id=run_id,
+        sample_lengths=sample_lengths,
+        loss_rate=loss_rate,
+        seed=seed,
+        tokens_per_packet=tokens_per_packet,
+        hash_bits=hash_bits,
+        vocab_size=vocab_size,
+        source_layout=source_layout,
+        wire_interleaving=wire_interleaving,
+        channel_config=channel_config,
+        stream_config=stream_config,
+    )
+
+    result_rows: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    for case_index, sample_length in enumerate(sample_lengths):
+        sample = synthetic_sample(
+            sample_index=case_index,
+            token_count=sample_length,
+            vocab_size=vocab_size,
+        )
+        encoded = encode_streaming_window(
+            sample,
+            tokens_per_packet=tokens_per_packet,
+            config=stream_config,
+            source_layout=source_layout,
+            wire_interleaving=wire_interleaving,
+        )
+        case_seed = seed + case_index
+        case_channel_config = replace(channel_config, seed=case_seed)
+        loss_result = apply_packet_loss_channel(
+            encoded.packets,
+            config=case_channel_config,
+        )
+        plan = reconstruct_streaming_window(
+            total_tokens=len(sample.token_ids),
+            received_packets=loss_result.received,
+            tokens_per_packet=tokens_per_packet,
+        )
+        reconstructed_tokens = _tokens_from_plan(plan)
+        metrics = compute_token_metrics(
+            original_tokens=sample.token_ids,
+            reconstructed_tokens=reconstructed_tokens,
+            reconstruction_plan=plan,
+            mask_token_id=DEFAULT_MASK_TOKEN_ID,
+        )
+        case_id = f"case{case_index:04d}"
+        result_rows.append(
+            _result_row(
+                run_id=run_id,
+                case_id=case_id,
+                sample_id=sample.sample_id,
+                case_seed=case_seed,
+                loss_rate=loss_rate,
+                tokens_per_packet=tokens_per_packet,
+                hash_bits=hash_bits,
+                source_token_count=len(sample.token_ids),
+                plan=plan,
+                metrics=metrics,
+                received_packet_count=len(loss_result.received),
+                dropped_packet_count=len(loss_result.dropped),
+                source_layout=source_layout,
+                wire_interleaving=wire_interleaving,
+                channel_config=case_channel_config,
+                encoded=encoded,
+                model_label=STREAMING_WINDOW_MODEL_LABEL,
+                strategy=_stream_strategy(hash_bits),
+                baseline_family=STREAMING_WINDOW_BASELINE_FAMILY,
+                protection_mode=STREAMING_WINDOW_SCHEME,
+            )
+        )
+        events.append(
+            {
+                "event_type": "streaming_window_micro_eval_case",
+                "run_id": run_id,
+                "case_id": case_id,
+                "model_label": STREAMING_WINDOW_MODEL_LABEL,
+                "strategy": _stream_strategy(hash_bits),
+                "sample": sample.to_dict(),
+                "encoded": encoded.to_dict(),
+                "loss_result": loss_result.to_dict(),
+                "reconstruction_plan": plan.to_dict(),
+                "reconstructed_tokens": list(reconstructed_tokens),
+                "metrics": metrics.to_dict(),
+            }
+        )
+
+    write_run_artifacts(
+        output_dir=output_dir,
+        manifest=manifest,
+        result_rows=result_rows,
+        events=events,
+    )
+    return {
+        "run_id": run_id,
+        "manifest": manifest,
+        "result_rows": result_rows,
+        "events": events,
+    }
+
+
 def _validate_config(
     *,
     sample_lengths: Sequence[int],
@@ -522,6 +681,80 @@ def _lt_manifest(
             "wire_interleaving": wire_interleaving.to_dict(),
             "channel": channel_config.to_dict(),
             "lt_fountain": lt_config.to_dict(),
+        },
+        "artifacts": {
+            "manifest": "run_manifest.json",
+            "results": "results.csv",
+            "events": "events.jsonl",
+        },
+    }
+
+
+def _stream_run_id(
+    *,
+    sample_lengths: Sequence[int],
+    loss_rate: float,
+    seed: int,
+    tokens_per_packet: int,
+    hash_bits: int,
+    source_layout: SourceLayoutConfig,
+    wire_interleaving: WireInterleavingConfig,
+    channel_config: PacketLossChannelConfig,
+    stream_config: StreamingWindowConfig,
+) -> str:
+    lengths = "-".join(str(length) for length in sample_lengths)
+    source_chunk = source_layout.chunk_size if source_layout.chunk_size is not None else "default"
+    return (
+        f"streaming-window-micro-eval|matched-hash{hash_bits}|loss{loss_rate:g}|"
+        f"lengths{lengths}|tpp{tokens_per_packet}|seed{seed}|"
+        f"window{stream_config.window_size}|stride{stream_config.window_stride}|"
+        f"source-{source_layout.mode}-chunk{source_chunk}|"
+        f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}|"
+        f"channel-{channel_config.mode}"
+    )
+
+
+def _stream_strategy(hash_bits: int) -> str:
+    return f"Classical_StreamingWindow_MatchedHash{hash_bits}"
+
+
+def _stream_manifest(
+    *,
+    run_id: str,
+    sample_lengths: Sequence[int],
+    loss_rate: float,
+    seed: int,
+    tokens_per_packet: int,
+    hash_bits: int,
+    vocab_size: int,
+    source_layout: SourceLayoutConfig,
+    wire_interleaving: WireInterleavingConfig,
+    channel_config: PacketLossChannelConfig,
+    stream_config: StreamingWindowConfig,
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "runner": "streaming_window_synthetic_micro_eval",
+        "model_label": STREAMING_WINDOW_MODEL_LABEL,
+        "model_kind": "classical_streaming_window",
+        "baseline_family": STREAMING_WINDOW_BASELINE_FAMILY,
+        "not_a_research_claim": True,
+        "not_a_research_claim_warning": MICRO_EVAL_WARNING,
+        "micro_eval": True,
+        "strategy": _stream_strategy(hash_bits),
+        "config": {
+            "sample_lengths": list(sample_lengths),
+            "loss_rate": loss_rate,
+            "seed": seed,
+            "tokens_per_packet": tokens_per_packet,
+            "hash_bits": hash_bits,
+            "vocab_size": vocab_size,
+            "protection_mode": STREAMING_WINDOW_SCHEME,
+            "oracle_hash_metadata": False,
+            "source_layout": source_layout.to_dict(),
+            "wire_interleaving": wire_interleaving.to_dict(),
+            "channel": channel_config.to_dict(),
+            "streaming_window": stream_config.to_dict(),
         },
         "artifacts": {
             "manifest": "run_manifest.json",
