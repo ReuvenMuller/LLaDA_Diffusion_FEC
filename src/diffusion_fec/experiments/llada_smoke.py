@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME
-from diffusion_fec.coding.token_hash import build_token_hash_map
 from diffusion_fec.experiments.logging import write_run_artifacts
 from diffusion_fec.experiments.smoke import SmokeRecoveryCase, run_smoke_recovery_case
 from diffusion_fec.models.llada import LLADA_1_5_MODEL_ID, LLaDAAdapter
@@ -31,6 +31,10 @@ def run_real_llada_smoke(
     steps: int = 2,
     local_files_only: bool = False,
     allow_cpu: bool = False,
+    hash_profile_dir: str | Path | None = None,
+    build_hash_profile: bool = False,
+    hash_map_mode: str = DEFAULT_HASH_MAP_MODE,
+    hash_profile_name: str | None = None,
 ) -> dict[str, Any]:
     """Load real LLaDA and run one tiny transmitted-protection smoke case."""
 
@@ -62,7 +66,10 @@ def run_real_llada_smoke(
     forward_shape = _run_tiny_forward(adapter)
     sample = _tiny_token_sample(adapter)
     config = adapter.decoding_config(steps=steps, block_length=tokens_per_packet)
-    token_hash_map = build_token_hash_map(
+    profile_name = hash_profile_name or _default_hash_profile_name(model_id)
+    token_hash_map, hash_profile_info = load_or_build_hash_profile(
+        profile_dir=hash_profile_dir,
+        profile_name=profile_name,
         vocab_size=adapter.vocab_size,
         hash_bits=hash_bits,
         decode_token=adapter,
@@ -71,6 +78,10 @@ def run_real_llada_smoke(
             *(token_id for token_id in (adapter.eos_token_id, adapter.pad_token_id) if token_id is not None),
         },
         salt=f"{model_id}|real-llada-smoke",
+        map_mode=hash_map_mode,
+        model_id=model_id,
+        tokenizer_name=model_id,
+        build_if_missing=build_hash_profile,
     )
     case = run_smoke_recovery_case(
         sample=sample,
@@ -101,6 +112,7 @@ def run_real_llada_smoke(
         allow_cpu=allow_cpu,
         tokenizer_stage=tokenizer_stage,
         forward_shape=forward_shape,
+        hash_profile_info=hash_profile_info,
     )
     result_rows = [
         _result_row(
@@ -242,6 +254,10 @@ def _run_id(*, model_id: str, hash_bits: int, loss_rate: float, seed: int, steps
     return f"real-llada-smoke|{model_label}|hash{hash_bits}|loss{loss_rate:g}|steps{steps}|seed{seed}"
 
 
+def _default_hash_profile_name(model_id: str) -> str:
+    return f"{model_id.replace('/', '-')}-real-smoke-v1"
+
+
 def _manifest(
     *,
     run_id: str,
@@ -255,6 +271,7 @@ def _manifest(
     allow_cpu: bool,
     tokenizer_stage: dict[str, Any],
     forward_shape: tuple[int, int, int],
+    hash_profile_info: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -281,6 +298,7 @@ def _manifest(
             "local_files_only": local_files_only,
             "allow_cpu": allow_cpu,
         },
+        "hash_profile": hash_profile_info,
         "artifacts": {
             "manifest": "run_manifest.json",
             "results": "results.csv",

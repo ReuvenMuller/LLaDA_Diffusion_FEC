@@ -123,3 +123,55 @@ def test_runner_cli_entrypoint_writes_artifacts(tmp_path) -> None:
     assert exit_code == 0
     assert (output_dir / "run_manifest.json").exists()
     assert read_json(output_dir / "run_manifest.json")["config"]["seed"] == 9
+
+
+def test_runner_can_build_and_reuse_hash_profile(tmp_path) -> None:
+    profile_dir = tmp_path / "hash_profile"
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+
+    run_minimal_smoke(
+        output_dir=first_dir,
+        sample_count=1,
+        seed=4,
+        hash_profile_dir=profile_dir,
+        build_hash_profile=True,
+    )
+    run_minimal_smoke(
+        output_dir=second_dir,
+        sample_count=1,
+        seed=4,
+        hash_profile_dir=profile_dir,
+    )
+
+    first_manifest = read_json(first_dir / "run_manifest.json")
+    second_manifest = read_json(second_dir / "run_manifest.json")
+
+    assert first_manifest["hash_profile"]["source"] == "built_profile"
+    assert second_manifest["hash_profile"]["source"] == "loaded_profile"
+    assert (profile_dir / "uniform_hash4_map.npy").exists()
+    assert (profile_dir / "hash_profile_metadata.json").exists()
+    assert read_csv(first_dir / "results.csv") == read_csv(second_dir / "results.csv")
+
+
+def test_runner_cli_can_build_hash_profile(tmp_path) -> None:
+    output_dir = tmp_path / "cli"
+    profile_dir = tmp_path / "profile"
+
+    exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--sample-count",
+            "1",
+            "--seed",
+            "12",
+            "--hash-profile-dir",
+            str(profile_dir),
+            "--build-hash-profile",
+        ]
+    )
+
+    assert exit_code == 0
+    assert read_json(output_dir / "run_manifest.json")["hash_profile"]["source"] == "built_profile"
+    assert (profile_dir / "uniform_hash4_map.npy").exists()

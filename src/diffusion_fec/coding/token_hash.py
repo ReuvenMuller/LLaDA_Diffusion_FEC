@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any
+from typing import Any, Sequence
 
 
 SUPPORTED_HASH_BITS = frozenset({4, 8, 16})
@@ -211,6 +211,44 @@ def build_token_hash_map(
         hash_bits=hash_bits,
         vocab_size=vocab_size,
         token_to_bucket=tuple(token_to_bucket),
+        bucket_to_token_ids=tuple(tuple(bucket) for bucket in buckets),
+        excluded_token_ids=excluded,
+        salt=salt,
+    )
+
+
+def token_hash_map_from_token_to_bucket(
+    *,
+    hash_bits: int,
+    token_to_bucket: Sequence[int],
+    excluded_token_ids: Iterable[int] = (),
+    salt: str = "",
+    vocab_size: int | None = None,
+) -> TokenHashMap:
+    """Rebuild a TokenHashMap from a stored token_id -> bucket_id array."""
+
+    _validate_hash_bits(hash_bits)
+    token_to_bucket = tuple(int(bucket_id) for bucket_id in token_to_bucket)
+    resolved_vocab_size = len(token_to_bucket) if vocab_size is None else vocab_size
+    if resolved_vocab_size != len(token_to_bucket):
+        raise ValueError("token_to_bucket length must equal vocab_size")
+
+    excluded = frozenset(int(token_id) for token_id in excluded_token_ids)
+    for token_id in excluded:
+        _validate_token_id(token_id, resolved_vocab_size, "excluded token ID")
+
+    bucket_count = 1 << hash_bits
+    buckets: list[list[int]] = [[] for _ in range(bucket_count)]
+    for token_id, bucket_id in enumerate(token_to_bucket):
+        if bucket_id < 0 or bucket_id >= bucket_count:
+            raise ValueError("token_to_bucket contains an out-of-range bucket ID")
+        if token_id not in excluded:
+            buckets[bucket_id].append(token_id)
+
+    return TokenHashMap(
+        hash_bits=hash_bits,
+        vocab_size=resolved_vocab_size,
+        token_to_bucket=token_to_bucket,
         bucket_to_token_ids=tuple(tuple(bucket) for bucket in buckets),
         excluded_token_ids=excluded,
         salt=salt,

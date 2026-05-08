@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME
-from diffusion_fec.coding.token_hash import build_token_hash_map
 from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
 from diffusion_fec.experiments.logging import write_run_artifacts
 from diffusion_fec.experiments.smoke import SmokeRecoveryCase, run_smoke_recovery_case
@@ -63,6 +63,10 @@ def run_minimal_smoke(
     hash_bits: int = 4,
     vocab_size: int = DEFAULT_VOCAB_SIZE,
     steps: int = 4,
+    hash_profile_dir: str | Path | None = None,
+    build_hash_profile: bool = False,
+    hash_map_mode: str = DEFAULT_HASH_MAP_MODE,
+    hash_profile_name: str = "fake_smoke_v1",
 ) -> dict[str, Any]:
     """Run tiny deterministic fake-model smoke cases and write artifacts."""
 
@@ -84,16 +88,23 @@ def run_minimal_smoke(
         steps=steps,
         block_length=max(tokens_per_packet, 1),
     )
-    token_hash_map = build_token_hash_map(
+    excluded_token_ids = {
+        DEFAULT_MASK_TOKEN_ID,
+        DEFAULT_EOS_TOKEN_ID,
+        DEFAULT_PAD_TOKEN_ID,
+    }
+    token_hash_map, hash_profile_info = load_or_build_hash_profile(
+        profile_dir=hash_profile_dir,
+        profile_name=hash_profile_name,
         vocab_size=vocab_size,
         hash_bits=hash_bits,
         decode_token=lambda token_id: f"fake-token-{token_id}",
-        excluded_token_ids={
-            DEFAULT_MASK_TOKEN_ID,
-            DEFAULT_EOS_TOKEN_ID,
-            DEFAULT_PAD_TOKEN_ID,
-        },
+        excluded_token_ids=excluded_token_ids,
         salt="fake-smoke",
+        map_mode=hash_map_mode,
+        model_id=FAKE_MODEL_LABEL,
+        tokenizer_name="fake-deterministic-tokenizer",
+        build_if_missing=build_hash_profile,
     )
     run_id = _run_id(
         sample_count=sample_count,
@@ -113,6 +124,7 @@ def run_minimal_smoke(
         hash_bits=hash_bits,
         vocab_size=vocab_size,
         steps=steps,
+        hash_profile_info=hash_profile_info,
     )
 
     result_rows: list[dict[str, Any]] = []
@@ -185,6 +197,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hash-bits", type=int, default=4, choices=[4, 8, 16])
     parser.add_argument("--vocab-size", type=int, default=DEFAULT_VOCAB_SIZE)
     parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument("--hash-profile-dir")
+    parser.add_argument("--build-hash-profile", action="store_true")
+    parser.add_argument("--hash-map-mode", default=DEFAULT_HASH_MAP_MODE)
+    parser.add_argument("--hash-profile-name")
     args = parser.parse_args(argv)
 
     if args.real_llada_smoke:
@@ -204,6 +220,10 @@ def main(argv: list[str] | None = None) -> int:
                 steps=args.steps,
                 local_files_only=args.llada_local_files_only,
                 allow_cpu=args.allow_cpu_real_llada,
+                hash_profile_dir=args.hash_profile_dir,
+                build_hash_profile=args.build_hash_profile,
+                hash_map_mode=args.hash_map_mode,
+                hash_profile_name=args.hash_profile_name,
             )
         except RealLLaDASmokeUnavailable as exc:
             print(f"Real LLaDA smoke unavailable: {exc}", file=sys.stderr)
@@ -220,6 +240,10 @@ def main(argv: list[str] | None = None) -> int:
         hash_bits=args.hash_bits,
         vocab_size=args.vocab_size,
         steps=args.steps,
+        hash_profile_dir=args.hash_profile_dir,
+        build_hash_profile=args.build_hash_profile,
+        hash_map_mode=args.hash_map_mode,
+        hash_profile_name=args.hash_profile_name or "fake_smoke_v1",
     )
     return 0
 
@@ -282,6 +306,7 @@ def _manifest(
     hash_bits: int,
     vocab_size: int,
     steps: int,
+    hash_profile_info: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -304,6 +329,7 @@ def _manifest(
             "pad_token_id": DEFAULT_PAD_TOKEN_ID,
             "steps": steps,
         },
+        "hash_profile": hash_profile_info,
         "artifacts": {
             "manifest": "run_manifest.json",
             "results": "results.csv",
