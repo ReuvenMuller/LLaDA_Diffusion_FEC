@@ -2,7 +2,10 @@ import csv
 import json
 
 from diffusion_fec.channels.packet_loss import CHANNEL_BURST, PacketLossChannelConfig
-from diffusion_fec.experiments.classical_micro_eval import run_xor_parity_micro_eval
+from diffusion_fec.experiments.classical_micro_eval import (
+    run_lt_fountain_micro_eval,
+    run_xor_parity_micro_eval,
+)
 from diffusion_fec.experiments.runner import main
 
 
@@ -134,3 +137,90 @@ def test_xor_parity_cli_entrypoint_writes_artifacts(tmp_path) -> None:
     assert exit_code == 0
     assert read_json(output_dir / "run_manifest.json")["baseline_family"] == "xor_parity"
     assert read_csv(output_dir / "results.csv")[0]["protection_mode"] == "xor_parity"
+
+
+def test_lt_fountain_micro_eval_writes_artifacts(tmp_path) -> None:
+    output_dir = tmp_path / "lt"
+
+    run_lt_fountain_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=2,
+        hash_bits=4,
+        vocab_size=128,
+        repair_rate=1.0,
+        lt_random_seed=3,
+        coverage_aware=True,
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=1,
+        ),
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    rows = read_csv(output_dir / "results.csv")
+    events = read_jsonl(output_dir / "events.jsonl")
+
+    assert manifest["runner"] == "lt_fountain_synthetic_micro_eval"
+    assert manifest["baseline_family"] == "lt_fountain"
+    assert rows[0]["strategy"] == "Classical_LTFountain_CoverageAware_MatchedHash4"
+    assert rows[0]["baseline_family"] == "lt_fountain"
+    assert rows[0]["protection_mode"] == "lt_fountain"
+    assert rows[0]["repair_packet_count"] == rows[0]["extra_packet_count"]
+    assert events[0]["event_type"] == "lt_fountain_micro_eval_case"
+    assert "repair_packets" in events[0]["encoded"]
+
+
+def test_lt_fountain_micro_eval_output_is_deterministic(tmp_path) -> None:
+    first_dir = tmp_path / "lt_first"
+    second_dir = tmp_path / "lt_second"
+
+    run_lt_fountain_micro_eval(
+        output_dir=first_dir,
+        sample_lengths=(8, 16),
+        seed=5,
+        tokens_per_packet=2,
+        repair_rate=0.5,
+        lt_random_seed=9,
+    )
+    run_lt_fountain_micro_eval(
+        output_dir=second_dir,
+        sample_lengths=(8, 16),
+        seed=5,
+        tokens_per_packet=2,
+        repair_rate=0.5,
+        lt_random_seed=9,
+    )
+
+    for filename in ("run_manifest.json", "results.csv", "events.jsonl"):
+        assert (first_dir / filename).read_text(encoding="utf-8") == (
+            second_dir / filename
+        ).read_text(encoding="utf-8")
+
+
+def test_lt_fountain_cli_entrypoint_writes_artifacts(tmp_path) -> None:
+    output_dir = tmp_path / "lt_cli"
+
+    exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--lt-fountain-micro-eval",
+            "--sample-lengths",
+            "8",
+            "--tokens-per-packet",
+            "2",
+            "--lt-repair-rate",
+            "1.0",
+            "--lt-coverage-aware",
+            "--channel",
+            CHANNEL_BURST,
+            "--burst-length",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert read_json(output_dir / "run_manifest.json")["baseline_family"] == "lt_fountain"
+    assert read_csv(output_dir / "results.csv")[0]["protection_mode"] == "lt_fountain"

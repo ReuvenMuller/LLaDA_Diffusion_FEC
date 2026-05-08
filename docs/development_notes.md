@@ -224,6 +224,22 @@ python -m diffusion_fec.experiments.runner `
 Use the same `--source-layout`, `--wire-interleaving`, and `--channel` flags as
 the fake LLaDA micro-eval runner.
 
+LT/fountain baseline micro-eval:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\lt_fountain_micro_eval `
+  --lt-fountain-micro-eval `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --hash-bits 4 `
+  --lt-repair-rate 0.25 `
+  --lt-random-seed 7
+```
+
+Add `--lt-coverage-aware` to force the LT repair scheduler to cover every source
+packet when its repair budget allows.
+
 Current opt-in pytest smoke:
 
 ```powershell

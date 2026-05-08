@@ -208,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--micro-eval", action="store_true")
     parser.add_argument("--xor-parity-micro-eval", action="store_true")
+    parser.add_argument("--lt-fountain-micro-eval", action="store_true")
     parser.add_argument("--real-llada-smoke", action="store_true")
     parser.add_argument("--real-llada-micro-eval", action="store_true")
     parser.add_argument("--llada-model-id", default="GSAI-ML/LLaDA-1.5")
@@ -265,18 +266,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--xor-stripe-size", type=int, default=4)
     parser.add_argument("--xor-stripe-stride", type=int)
+    parser.add_argument("--lt-repair-rate", type=float, default=0.25)
+    parser.add_argument("--lt-random-seed", type=int, default=7)
+    parser.add_argument("--lt-coverage-aware", action="store_true")
     args = parser.parse_args(argv)
 
     selected_runners = [
         args.micro_eval,
         args.xor_parity_micro_eval,
+        args.lt_fountain_micro_eval,
         args.real_llada_smoke,
         args.real_llada_micro_eval,
     ]
     if sum(1 for selected in selected_runners if selected) > 1:
         parser.error(
-            "--micro-eval, --xor-parity-micro-eval, --real-llada-smoke, "
-            "and --real-llada-micro-eval are separate runners"
+            "--micro-eval, --xor-parity-micro-eval, --lt-fountain-micro-eval, "
+            "--real-llada-smoke, and --real-llada-micro-eval are separate runners"
         )
 
     if args.micro_eval:
@@ -322,6 +327,29 @@ def main(argv: list[str] | None = None) -> int:
             channel_config=_channel_config_from_args(args),
             data_packets_per_stripe=args.xor_stripe_size,
             stripe_stride=args.xor_stripe_stride,
+        )
+        return 0
+
+    if args.lt_fountain_micro_eval:
+        from diffusion_fec.experiments.classical_micro_eval import run_lt_fountain_micro_eval
+
+        run_lt_fountain_micro_eval(
+            output_dir=args.output_dir,
+            sample_lengths=_parse_sample_lengths(
+                args.sample_lengths,
+                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+            ),
+            loss_rate=args.loss_rate,
+            seed=args.seed,
+            tokens_per_packet=args.tokens_per_packet,
+            hash_bits=args.hash_bits,
+            vocab_size=args.vocab_size,
+            source_layout=_source_layout_from_args(args),
+            wire_interleaving=_wire_interleaving_from_args(args),
+            channel_config=_channel_config_from_args(args),
+            repair_rate=args.lt_repair_rate,
+            lt_random_seed=args.lt_random_seed,
+            coverage_aware=args.lt_coverage_aware,
         )
         return 0
 
