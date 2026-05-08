@@ -48,6 +48,7 @@ See [docs/reference_sources.md](docs/reference_sources.md) for model and code re
 - [Implementation plan](docs/implementation_plan.md)
 - [Experiment plan](docs/experiment_plan.md)
 - [Development notes](docs/development_notes.md)
+- [Roadmap](docs/roadmap.md)
 - [Hash profiles](docs/hash_profiles.md)
 - [LLaDA server model run notes](docs/llada_server_model_notes.md)
 - [Reference sources](docs/reference_sources.md)
@@ -70,5 +71,19 @@ docs/
 ```
 
 The first prototype slices are now implemented: packetization, transmitted
-lookback hash metadata, constrained fake-model decoding, metrics, artifact
-logging, opt-in real LLaDA smoke, and persisted hash profiles.
+lookback hash metadata, source and wire interleaving, constrained fake-model
+decoding, metrics, artifact logging, opt-in real LLaDA smoke, persisted hash
+profiles, and a deterministic fake micro-eval runner.
+
+Minimal local micro-eval:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\fake_micro_eval `
+  --micro-eval `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --seed 0
+```
+
+This command is model-free and is not a research result.

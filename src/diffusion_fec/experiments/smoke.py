@@ -7,8 +7,10 @@ from typing import Any
 
 from diffusion_fec.channels.random_loss import RandomLossResult, apply_random_loss
 from diffusion_fec.coding.packetizer import (
+    SourceLayoutConfig,
+    WireInterleavingConfig,
     build_reconstruction_plan,
-    packetize_contiguous,
+    packetize_sample,
 )
 from diffusion_fec.coding.protection import (
     LOOKBACK_1_SCHEME,
@@ -80,11 +82,18 @@ def run_smoke_recovery_case(
     token_hash_map: TokenHashMap | None = None,
     protection_mode: str = "none",
     oracle_hash_metadata: bool = False,
+    source_layout: SourceLayoutConfig | None = None,
+    wire_interleaving: WireInterleavingConfig | None = None,
     prompt_token_ids: list[int] | None = None,
 ) -> SmokeRecoveryCase:
     """Run packetization, random loss, reconstruction planning, and decoding."""
 
-    packets = packetize_contiguous(sample, tokens_per_packet=tokens_per_packet)
+    packets = packetize_sample(
+        sample,
+        tokens_per_packet=tokens_per_packet,
+        source_layout=source_layout,
+        wire_interleaving=wire_interleaving,
+    )
     transmitted_packets = _apply_protection_mode(
         packets=packets,
         token_hash_map=token_hash_map,

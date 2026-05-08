@@ -1,6 +1,13 @@
 import pytest
 
-from diffusion_fec.coding.packetizer import packetize_contiguous
+from diffusion_fec.coding.packetizer import (
+    SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
+    WIRE_INTERLEAVING_MATRIX,
+    SourceLayoutConfig,
+    WireInterleavingConfig,
+    packetize_contiguous,
+    packetize_sample,
+)
 from diffusion_fec.coding.protection import (
     LOOKBACK_HASH_METADATA_KEY,
     LOOKBACK_1_SCHEME,
@@ -47,10 +54,12 @@ def test_packet_i_carries_hashes_for_packet_i_minus_one() -> None:
         assert metadata.protecting_packet == PacketRef(
             source_id="sample-1",
             wire_id=index,
+            source_packet_index=index,
         )
         assert metadata.protected_packet == PacketRef(
             source_id="sample-1",
             wire_id=index - 1,
+            source_packet_index=index - 1,
         )
         assert metadata.hashes == (
             PositionHash(
@@ -69,6 +78,41 @@ def test_attach_lookback_hashes_does_not_mutate_input_packets() -> None:
     assert [packet.metadata for packet in packets] == original_metadata
     assert protected_packets is not packets
     assert protected_packets[1] is not packets[1]
+
+
+def test_lookback_protection_uses_source_packet_order_when_wire_ids_are_interleaved() -> None:
+    sample = TokenSample(
+        sample_id="sample-1",
+        text="synthetic",
+        token_ids=[10, 11, 12, 13],
+        tokenizer_name="fake",
+    )
+    packets = packetize_sample(
+        sample,
+        tokens_per_packet=1,
+        source_layout=SourceLayoutConfig(
+            mode=SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
+            chunk_size=1,
+        ),
+        wire_interleaving=WireInterleavingConfig(
+            mode=WIRE_INTERLEAVING_MATRIX,
+            span=2,
+        ),
+    )
+
+    protected_packets = attach_lookback_hashes(packets, make_hash_map())
+    source_packet_1 = next(
+        packet
+        for packet in protected_packets
+        if packet.metadata["source_packet_index"] == 1
+    )
+    metadata = LookbackHashMetadata.from_dict(
+        source_packet_1.metadata[LOOKBACK_HASH_METADATA_KEY]
+    )
+
+    assert metadata.protecting_packet.source_packet_index == 1
+    assert metadata.protected_packet.source_packet_index == 0
+    assert metadata.protected_packet.wire_id == 0
 
 
 def test_extract_received_hash_metadata_uses_surviving_packets_only() -> None:

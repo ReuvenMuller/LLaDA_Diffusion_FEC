@@ -123,6 +123,34 @@ loads tokenizer/config first, then refuses to load model weights unless CUDA is
 available. Passing `--allow-cpu-real-llada` explicitly overrides that guard, but
 CPU loading is expected to be impractical for the 8B model.
 
+Current local synthetic micro-eval:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\fake_micro_eval `
+  --micro-eval `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --seed 0
+```
+
+Optional interleaving knobs:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\fake_micro_eval_interleaved `
+  --micro-eval `
+  --sample-lengths 8,16,32 `
+  --tokens-per-packet 4 `
+  --source-layout round_robin_chunks `
+  --source-chunk-size 1 `
+  --wire-interleaving matrix `
+  --wire-interleaving-span 4
+```
+
+These micro-evals use the fake deterministic model and are engineering
+validation only.
+
 Current opt-in pytest smoke:
 
 ```powershell

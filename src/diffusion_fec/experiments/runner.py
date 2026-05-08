@@ -13,9 +13,23 @@ from pathlib import Path
 from typing import Any
 
 from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
+from diffusion_fec.coding.packetizer import (
+    SOURCE_LAYOUT_CONTIGUOUS,
+    SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
+    WIRE_INTERLEAVING_MATRIX,
+    WIRE_INTERLEAVING_NONE,
+    SourceLayoutConfig,
+    WireInterleavingConfig,
+)
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME
 from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
 from diffusion_fec.experiments.logging import write_run_artifacts
+from diffusion_fec.experiments.micro_eval import (
+    DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+    MICRO_EVAL_MODEL_HASH,
+    MICRO_EVAL_MODEL_ONLY,
+    run_synthetic_micro_eval,
+)
 from diffusion_fec.experiments.smoke import SmokeRecoveryCase, run_smoke_recovery_case
 from diffusion_fec.types import TokenSample
 
@@ -185,6 +199,7 @@ def run_minimal_smoke(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run fake deterministic smoke artifacts.")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--micro-eval", action="store_true")
     parser.add_argument("--real-llada-smoke", action="store_true")
     parser.add_argument("--llada-model-id", default="GSAI-ML/LLaDA-1.5")
     parser.add_argument("--llada-local-files-only", action="store_true")
@@ -201,7 +216,52 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-hash-profile", action="store_true")
     parser.add_argument("--hash-map-mode", default=DEFAULT_HASH_MAP_MODE)
     parser.add_argument("--hash-profile-name")
+    parser.add_argument(
+        "--sample-lengths",
+        default=",".join(str(length) for length in DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS),
+        help="Comma-separated synthetic micro-eval sample lengths.",
+    )
+    parser.add_argument(
+        "--micro-eval-mode",
+        default=MICRO_EVAL_MODEL_HASH,
+        choices=[MICRO_EVAL_MODEL_ONLY, MICRO_EVAL_MODEL_HASH],
+    )
+    parser.add_argument(
+        "--source-layout",
+        default=SOURCE_LAYOUT_CONTIGUOUS,
+        choices=[SOURCE_LAYOUT_CONTIGUOUS, SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS],
+    )
+    parser.add_argument("--source-chunk-size", type=int, default=1)
+    parser.add_argument(
+        "--wire-interleaving",
+        default=WIRE_INTERLEAVING_NONE,
+        choices=[WIRE_INTERLEAVING_NONE, WIRE_INTERLEAVING_MATRIX],
+    )
+    parser.add_argument("--wire-interleaving-span", type=int, default=4)
     args = parser.parse_args(argv)
+
+    if args.micro_eval and args.real_llada_smoke:
+        parser.error("--micro-eval and --real-llada-smoke are separate runners")
+
+    if args.micro_eval:
+        run_synthetic_micro_eval(
+            output_dir=args.output_dir,
+            sample_lengths=_parse_sample_lengths(args.sample_lengths),
+            loss_rate=args.loss_rate,
+            seed=args.seed,
+            tokens_per_packet=args.tokens_per_packet,
+            mode=args.micro_eval_mode,
+            hash_bits=args.hash_bits,
+            vocab_size=args.vocab_size,
+            steps=args.steps,
+            source_layout=_source_layout_from_args(args),
+            wire_interleaving=_wire_interleaving_from_args(args),
+            hash_profile_dir=args.hash_profile_dir,
+            build_hash_profile=args.build_hash_profile,
+            hash_map_mode=args.hash_map_mode,
+            hash_profile_name=args.hash_profile_name or "fake_micro_eval_v1",
+        )
+        return 0
 
     if args.real_llada_smoke:
         from diffusion_fec.experiments.llada_smoke import (
@@ -246,6 +306,34 @@ def main(argv: list[str] | None = None) -> int:
         hash_profile_name=args.hash_profile_name or "fake_smoke_v1",
     )
     return 0
+
+
+def _parse_sample_lengths(raw: str) -> tuple[int, ...]:
+    values: list[int] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        values.append(int(item))
+    if not values:
+        raise ValueError("sample lengths must contain at least one value")
+    return tuple(values)
+
+
+def _source_layout_from_args(args: argparse.Namespace) -> SourceLayoutConfig:
+    if args.source_layout == SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS:
+        return SourceLayoutConfig(
+            mode=SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
+            chunk_size=args.source_chunk_size,
+        )
+    return SourceLayoutConfig(mode=SOURCE_LAYOUT_CONTIGUOUS)
+
+
+def _wire_interleaving_from_args(args: argparse.Namespace) -> WireInterleavingConfig:
+    return WireInterleavingConfig(
+        mode=args.wire_interleaving,
+        span=args.wire_interleaving_span,
+    )
 
 
 def _validate_runner_config(

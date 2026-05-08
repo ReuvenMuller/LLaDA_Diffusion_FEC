@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from diffusion_fec.coding.token_hash import TokenHashMap
+from diffusion_fec.coding.packetizer import SOURCE_PACKET_INDEX_METADATA_KEY
 from diffusion_fec.types import Packet
 
 
@@ -20,11 +21,13 @@ class PacketRef:
 
     source_id: str
     wire_id: int
+    source_packet_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "source_id": self.source_id,
             "wire_id": self.wire_id,
+            "source_packet_index": self.source_packet_index,
         }
 
 
@@ -90,7 +93,7 @@ def attach_lookback_hashes(
 ) -> list[Packet]:
     """Return packets with lookback-1 hash metadata attached."""
 
-    ordered_packets = tuple(sorted(packets, key=lambda packet: packet.wire_id))
+    ordered_packets = tuple(sorted(packets, key=_packet_source_order_key))
     _validate_unique_wire_ids(ordered_packets)
     protected_packets: list[Packet] = []
 
@@ -153,11 +156,21 @@ def extract_received_hash_metadata(received_packets: Sequence[Packet]) -> dict[i
 
 
 def _packet_ref(packet: Packet) -> PacketRef:
-    return PacketRef(source_id=packet.source_id, wire_id=packet.wire_id)
+    source_packet_index = packet.metadata.get(SOURCE_PACKET_INDEX_METADATA_KEY)
+    return PacketRef(
+        source_id=packet.source_id,
+        wire_id=packet.wire_id,
+        source_packet_index=None if source_packet_index is None else int(source_packet_index),
+    )
 
 
 def _packet_ref_from_dict(data: dict[str, Any]) -> PacketRef:
-    return PacketRef(source_id=str(data["source_id"]), wire_id=int(data["wire_id"]))
+    source_packet_index = data.get("source_packet_index")
+    return PacketRef(
+        source_id=str(data["source_id"]),
+        wire_id=int(data["wire_id"]),
+        source_packet_index=None if source_packet_index is None else int(source_packet_index),
+    )
 
 
 def _coerce_lookback_metadata(data: Any) -> LookbackHashMetadata:
@@ -172,3 +185,10 @@ def _validate_unique_wire_ids(packets: Sequence[Packet]) -> None:
     wire_ids = [packet.wire_id for packet in packets]
     if len(set(wire_ids)) != len(wire_ids):
         raise ValueError("packets must have unique wire_id values")
+
+
+def _packet_source_order_key(packet: Packet) -> tuple[int, int]:
+    source_packet_index = packet.metadata.get(SOURCE_PACKET_INDEX_METADATA_KEY)
+    if source_packet_index is None:
+        return packet.wire_id, packet.wire_id
+    return int(source_packet_index), packet.wire_id
