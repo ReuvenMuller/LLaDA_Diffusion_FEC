@@ -77,8 +77,11 @@ runs/<sweep>/
   analysis/failure_examples.jsonl
 ```
 
-The sweep is skip-aware by default. Add `--sweep-overwrite` to rerun completed
-child runs.
+The sweep is skip-aware by default. A child run is reused only when its existing
+`run_manifest.json` matches the current runner config and dataset selection,
+including sample IDs, selection seed, and token cap. If those differ, the child
+run is treated as stale and rerun with status `completed_replaced_stale`. Add
+`--sweep-overwrite` to force all completed child runs to rerun.
 
 ## Dataset-Backed Validation
 

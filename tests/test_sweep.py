@@ -4,6 +4,7 @@ import json
 from diffusion_fec.channels.packet_loss import CHANNEL_BURST, CHANNEL_GILBERT_ELLIOTT
 from diffusion_fec.experiments.runner import main
 from diffusion_fec.experiments.sweep import (
+    STATUS_COMPLETED_REPLACED_STALE,
     SWEEP_RUNNER_MODEL_HASH,
     SWEEP_RUNNER_MODEL_ONLY,
     SWEEP_RUNNER_XOR_PARITY,
@@ -168,3 +169,141 @@ def test_synthetic_sweep_cli_uses_dataset_samples(tmp_path) -> None:
     assert first_child_rows[0]["sample_id"] == "wiki_0"
     assert int(first_child_rows[0]["source_token_count"]) <= 12
     assert first_child_manifest["config"]["sample_generation"]["type"] == "provided_token_samples"
+
+
+def test_synthetic_sweep_reruns_stale_dataset_child_when_selection_changes(tmp_path) -> None:
+    dataset_path = tmp_path / "genfec_messages.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {"id": "wiki_0", "original_message": "alpha beta gamma"},
+                {"id": "wiki_1", "original_message": "delta beta gamma"},
+                {"id": "wiki_2", "original_message": "zeta beta gamma"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "dataset_sweep"
+
+    first_exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--synthetic-sweep",
+            "--dataset-file",
+            str(dataset_path),
+            "--dataset-sample-count",
+            "1",
+            "--dataset-seed",
+            "0",
+            "--dataset-max-tokens",
+            "12",
+            "--vocab-size",
+            "64",
+            "--sweep-runners",
+            SWEEP_RUNNER_MODEL_ONLY,
+        ]
+    )
+    first_rows = read_csv(output_dir / "sweep_runs.csv")
+    first_child_rows = read_csv(output_dir / first_rows[0]["results"])
+
+    second_exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--synthetic-sweep",
+            "--dataset-file",
+            str(dataset_path),
+            "--dataset-sample-count",
+            "1",
+            "--dataset-seed",
+            "1",
+            "--dataset-max-tokens",
+            "12",
+            "--vocab-size",
+            "64",
+            "--sweep-runners",
+            SWEEP_RUNNER_MODEL_ONLY,
+        ]
+    )
+    second_manifest = read_json(output_dir / "sweep_manifest.json")
+    second_rows = read_csv(output_dir / "sweep_runs.csv")
+    second_child_rows = read_csv(output_dir / second_rows[0]["results"])
+    second_child_manifest = read_json(output_dir / second_rows[0]["output_dir"] / "run_manifest.json")
+
+    assert first_exit_code == 0
+    assert second_exit_code == 0
+    assert first_child_rows[0]["sample_id"] == "wiki_0"
+    assert second_rows[0]["status"] == STATUS_COMPLETED_REPLACED_STALE
+    assert "dataset" in second_rows[0]["reuse_decision"]
+    assert second_manifest["dataset"]["sample_ids"] == ["wiki_1"]
+    assert second_manifest["stale_existing_run_count"] == 1
+    assert second_child_rows[0]["sample_id"] == "wiki_1"
+    assert second_child_manifest["config"]["sample_generation"]["dataset"]["selection_seed"] == 1
+
+
+def test_synthetic_sweep_reruns_stale_dataset_child_when_token_cap_changes(tmp_path) -> None:
+    dataset_path = tmp_path / "genfec_messages.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {"id": "wiki_0", "original_message": "alpha beta gamma"},
+                {"id": "wiki_1", "original_message": "delta beta gamma"},
+                {"id": "wiki_2", "original_message": "zeta beta gamma"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "dataset_sweep"
+
+    main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--synthetic-sweep",
+            "--dataset-file",
+            str(dataset_path),
+            "--dataset-sample-count",
+            "1",
+            "--dataset-seed",
+            "0",
+            "--dataset-max-tokens",
+            "6",
+            "--vocab-size",
+            "64",
+            "--sweep-runners",
+            SWEEP_RUNNER_MODEL_ONLY,
+        ]
+    )
+    first_rows = read_csv(output_dir / "sweep_runs.csv")
+    first_child_rows = read_csv(output_dir / first_rows[0]["results"])
+
+    main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--synthetic-sweep",
+            "--dataset-file",
+            str(dataset_path),
+            "--dataset-sample-count",
+            "1",
+            "--dataset-seed",
+            "0",
+            "--dataset-max-tokens",
+            "10",
+            "--vocab-size",
+            "64",
+            "--sweep-runners",
+            SWEEP_RUNNER_MODEL_ONLY,
+        ]
+    )
+    second_manifest = read_json(output_dir / "sweep_manifest.json")
+    second_rows = read_csv(output_dir / "sweep_runs.csv")
+    second_child_rows = read_csv(output_dir / second_rows[0]["results"])
+
+    assert first_child_rows[0]["sample_id"] == "wiki_0"
+    assert int(first_child_rows[0]["source_token_count"]) == 6
+    assert second_rows[0]["status"] == STATUS_COMPLETED_REPLACED_STALE
+    assert "sample_lengths" in second_rows[0]["reuse_decision"]
+    assert second_manifest["dataset"]["max_tokens"] == 10
+    assert int(second_child_rows[0]["source_token_count"]) == 10

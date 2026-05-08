@@ -42,6 +42,9 @@ from diffusion_fec.experiments.micro_eval import (
 from diffusion_fec.types import TokenSample
 
 
+STATUS_COMPLETED = "completed"
+STATUS_SKIPPED_EXISTING = "skipped_existing"
+STATUS_COMPLETED_REPLACED_STALE = "completed_replaced_stale"
 SWEEP_RUNNER_MODEL_ONLY = "llada_model_only_fake"
 SWEEP_RUNNER_MODEL_HASH = "llada_model_hash_fake"
 SWEEP_RUNNER_XOR_PARITY = "xor_parity"
@@ -215,8 +218,28 @@ def run_synthetic_sweep(
     for spec in config.specs:
         child_dir = runs_dir / spec.name
         completed = _run_artifacts_complete(child_dir)
+        reuse_decision = "not_completed"
         if completed and config.skip_completed and not overwrite:
-            status = "skipped_existing"
+            can_reuse, reuse_decision = _child_run_matches_current_request(
+                child_dir=child_dir,
+                spec=spec,
+                dataset_info=dataset_info,
+                profile_name=config.profile_name,
+                hash_map_mode=config.hash_map_mode,
+            )
+            if can_reuse:
+                status = STATUS_SKIPPED_EXISTING
+            else:
+                _execute_spec(
+                    spec=spec,
+                    output_dir=child_dir,
+                    profile_dir=profile_dir,
+                    profile_name=config.profile_name,
+                    hash_map_mode=config.hash_map_mode,
+                    samples=samples,
+                    dataset_info=dataset_info,
+                )
+                status = STATUS_COMPLETED_REPLACED_STALE
         else:
             _execute_spec(
                 spec=spec,
@@ -227,12 +250,15 @@ def run_synthetic_sweep(
                 samples=samples,
                 dataset_info=dataset_info,
             )
-            status = "completed"
+            status = STATUS_COMPLETED
+            if completed and overwrite:
+                reuse_decision = "overwrite_requested"
         run_rows.append(
             {
                 "name": spec.name,
                 "runner": spec.runner,
                 "status": status,
+                "reuse_decision": reuse_decision,
                 "output_dir": str(child_dir.relative_to(output)),
                 "results": str((child_dir / "results.csv").relative_to(output)),
                 "events": str((child_dir / "events.jsonl").relative_to(output)),
@@ -252,8 +278,13 @@ def run_synthetic_sweep(
         "child_runs_dir": "runs",
         "analysis_dir": "analysis",
         "run_count": len(run_rows),
-        "completed_run_count": sum(row["status"] == "completed" for row in run_rows),
-        "skipped_existing_run_count": sum(row["status"] == "skipped_existing" for row in run_rows),
+        "completed_run_count": sum(row["status"] == STATUS_COMPLETED for row in run_rows),
+        "skipped_existing_run_count": sum(
+            row["status"] == STATUS_SKIPPED_EXISTING for row in run_rows
+        ),
+        "stale_existing_run_count": sum(
+            row["status"] == STATUS_COMPLETED_REPLACED_STALE for row in run_rows
+        ),
         "analysis_manifest": "analysis/analysis_manifest.json",
     }
     _write_json(output / "sweep_manifest.json", sweep_manifest)
@@ -459,12 +490,204 @@ def _run_artifacts_complete(path: Path) -> bool:
     return all((path / filename).exists() for filename in ("run_manifest.json", "results.csv", "events.jsonl"))
 
 
+def _child_run_matches_current_request(
+    *,
+    child_dir: Path,
+    spec: SweepRunSpec,
+    dataset_info: dict[str, Any] | None,
+    profile_name: str,
+    hash_map_mode: str,
+) -> tuple[bool, str]:
+    manifest_path = child_dir / "run_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"stale_existing:unreadable_manifest:{type(exc).__name__}"
+
+    mismatches = _child_manifest_mismatches(
+        manifest=manifest,
+        spec=spec,
+        dataset_info=dataset_info,
+        profile_name=profile_name,
+        hash_map_mode=hash_map_mode,
+    )
+    if mismatches:
+        return False, "stale_existing:" + ",".join(mismatches)
+    return True, "manifest_matches_current_request"
+
+
+def _child_manifest_mismatches(
+    *,
+    manifest: dict[str, Any],
+    spec: SweepRunSpec,
+    dataset_info: dict[str, Any] | None,
+    profile_name: str,
+    hash_map_mode: str,
+) -> list[str]:
+    mismatches: list[str] = []
+    expected_runner = _expected_manifest_runner(spec.runner)
+    if manifest.get("runner") != expected_runner:
+        mismatches.append("runner")
+
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        return mismatches + ["config"]
+
+    expected_values = {
+        "sample_lengths": list(spec.sample_lengths),
+        "loss_rate": spec.loss_rate,
+        "seed": spec.seed,
+        "tokens_per_packet": spec.tokens_per_packet,
+        "hash_bits": spec.hash_bits,
+        "vocab_size": spec.vocab_size,
+        "source_layout": spec.source_layout.to_dict(),
+        "wire_interleaving": spec.wire_interleaving.to_dict(),
+        "channel": spec.channel_config.to_dict(),
+    }
+    for key, expected in expected_values.items():
+        if config.get(key) != expected:
+            mismatches.append(key)
+
+    _extend_runner_specific_mismatches(
+        mismatches=mismatches,
+        config=config,
+        spec=spec,
+    )
+    _extend_sample_generation_mismatches(
+        mismatches=mismatches,
+        config=config,
+        dataset_info=dataset_info,
+    )
+    _extend_hash_profile_mismatches(
+        mismatches=mismatches,
+        manifest=manifest,
+        spec=spec,
+        profile_name=profile_name,
+        hash_map_mode=hash_map_mode,
+    )
+    return mismatches
+
+
+def _expected_manifest_runner(runner: str) -> str:
+    if runner in {SWEEP_RUNNER_MODEL_ONLY, SWEEP_RUNNER_MODEL_HASH}:
+        return "synthetic_micro_eval"
+    if runner == SWEEP_RUNNER_XOR_PARITY:
+        return "xor_parity_synthetic_micro_eval"
+    if runner == SWEEP_RUNNER_LT_FOUNTAIN:
+        return "lt_fountain_synthetic_micro_eval"
+    if runner == SWEEP_RUNNER_STREAMING_WINDOW:
+        return "streaming_window_synthetic_micro_eval"
+    raise ValueError(f"unknown sweep runner: {runner}")
+
+
+def _extend_runner_specific_mismatches(
+    *,
+    mismatches: list[str],
+    config: dict[str, Any],
+    spec: SweepRunSpec,
+) -> None:
+    if spec.runner == SWEEP_RUNNER_MODEL_ONLY:
+        if config.get("mode") != MICRO_EVAL_MODEL_ONLY:
+            mismatches.append("mode")
+        return
+    if spec.runner == SWEEP_RUNNER_MODEL_HASH:
+        if config.get("mode") != MICRO_EVAL_MODEL_HASH:
+            mismatches.append("mode")
+        return
+    if spec.runner == SWEEP_RUNNER_XOR_PARITY:
+        expected = {
+            "data_packets_per_stripe": int(spec.options.get("data_packets_per_stripe", 4)),
+            "stripe_stride": spec.options.get("stripe_stride"),
+            "target_hash_bits": spec.hash_bits,
+            "vocab_size": spec.vocab_size,
+            "target_overhead_ratio": None,
+        }
+        if config.get("xor_parity") != expected:
+            mismatches.append("xor_parity")
+        return
+    if spec.runner == SWEEP_RUNNER_LT_FOUNTAIN:
+        expected = {
+            "repair_rate": float(spec.options.get("repair_rate", 0.25)),
+            "random_seed": int(spec.options.get("lt_random_seed", 7)),
+            "target_hash_bits": spec.hash_bits,
+            "vocab_size": spec.vocab_size,
+            "target_overhead_ratio": None,
+            "coverage_aware": bool(spec.options.get("coverage_aware", False)),
+            "degree_values": [1, 2, 3, 4],
+            "degree_weights": [0.35, 0.30, 0.20, 0.15],
+        }
+        if config.get("lt_fountain") != expected:
+            mismatches.append("lt_fountain")
+        return
+    expected = {
+        "window_size": int(spec.options.get("window_size", 5)),
+        "window_stride": int(spec.options.get("window_stride", 1)),
+        "target_hash_bits": spec.hash_bits,
+        "vocab_size": spec.vocab_size,
+        "target_overhead_ratio": None,
+    }
+    if config.get("streaming_window") != expected:
+        mismatches.append("streaming_window")
+
+
+def _extend_sample_generation_mismatches(
+    *,
+    mismatches: list[str],
+    config: dict[str, Any],
+    dataset_info: dict[str, Any] | None,
+) -> None:
+    sample_generation = config.get("sample_generation")
+    if not isinstance(sample_generation, dict):
+        mismatches.append("sample_generation")
+        return
+    if dataset_info is None:
+        if sample_generation.get("type") != "deterministic_synthetic_token_ids":
+            mismatches.append("sample_generation_type")
+        if "dataset" in sample_generation:
+            mismatches.append("dataset")
+        return
+    if sample_generation.get("type") != "provided_token_samples":
+        mismatches.append("sample_generation_type")
+    if sample_generation.get("dataset") != dict(dataset_info):
+        mismatches.append("dataset")
+
+
+def _extend_hash_profile_mismatches(
+    *,
+    mismatches: list[str],
+    manifest: dict[str, Any],
+    spec: SweepRunSpec,
+    profile_name: str,
+    hash_map_mode: str,
+) -> None:
+    if spec.runner not in {SWEEP_RUNNER_MODEL_ONLY, SWEEP_RUNNER_MODEL_HASH}:
+        return
+    hash_profile = manifest.get("hash_profile")
+    if not isinstance(hash_profile, dict):
+        mismatches.append("hash_profile")
+        return
+    if hash_profile.get("hash_bits") != spec.hash_bits:
+        mismatches.append("hash_profile_hash_bits")
+    if hash_profile.get("map_mode") != hash_map_mode:
+        mismatches.append("hash_profile_map_mode")
+    if spec.runner == SWEEP_RUNNER_MODEL_HASH and hash_profile.get("profile_name") != profile_name:
+        mismatches.append("hash_profile_name")
+
+
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _write_sweep_rows(path: Path, rows: Sequence[dict[str, Any]]) -> None:
-    fieldnames = ["name", "runner", "status", "output_dir", "results", "events"]
+    fieldnames = [
+        "name",
+        "runner",
+        "status",
+        "reuse_decision",
+        "output_dir",
+        "results",
+        "events",
+    ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
