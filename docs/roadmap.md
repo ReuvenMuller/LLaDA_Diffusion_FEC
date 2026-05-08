@@ -32,12 +32,14 @@ Done:
 - XOR parity synthetic micro-eval runner with manifest/results/events artifacts
 - LT/fountain-style baseline codec and synthetic micro-eval runner
 - streaming-window matched-overhead baseline codec and synthetic micro-eval runner
+- deterministic text-record loading utilities
+- result aggregation helpers for sweep CSVs
 
 Not done:
 
-- real text dataset sampling
 - larger server sweeps
-- aggregation, plots, and final report tables
+- plot/table generation beyond aggregate CSVs
+- qualitative failure-example extraction
 
 Current smoke and micro-eval outputs are engineering validation only. They are
 not research claims.
@@ -186,9 +188,8 @@ Freeze configs and hash profiles before final research runs.
 
 Begin Phase 6:
 
-- add deterministic real text sample loading
 - add small sweep commands/configs for fake, real LLaDA, and classical baselines
-- add aggregation scripts for metrics, latency, overhead, and failure examples
+- add plot/table generation for metrics, latency, overhead, and failure examples
 - freeze profile/config conventions before larger server-backed runs
 
 Acceptance:

@@ -260,6 +260,29 @@ $env:RUN_LLADA_E2E_SMOKE = "1"
 python -m pytest tests\test_llada_e2e_smoke.py -q
 ```
 
+## Dataset And Analysis Utilities
+
+Text records can be loaded from JSONL, JSON, or plain text with
+`diffusion_fec.data.load_text_records(...)`. Convert them to `TokenSample`
+objects with `tokenize_text_records(...)` by passing a tokenizer callback.
+
+Result CSVs can be aggregated with:
+
+```python
+from diffusion_fec.analysis import aggregate_result_rows, load_result_rows, write_aggregate_csv
+
+rows = load_result_rows([
+    "runs/fake_micro_eval/results.csv",
+    "runs/xor_parity_micro_eval/results.csv",
+])
+aggregate = aggregate_result_rows(rows)
+write_aggregate_csv(output_path="runs/aggregate.csv", rows=aggregate)
+```
+
+The aggregate helper reports case counts, exact-match rate, known-position
+preservation rate, mean recovery/edit metrics, mean latency, mean model forward
+calls, and mean repair overhead where those fields are present.
+
 ## Correctness Checks For Smoke Output
 
 For every run:
