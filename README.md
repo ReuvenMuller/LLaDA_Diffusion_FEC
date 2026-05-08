@@ -109,3 +109,23 @@ It is still synthetic engineering validation, not a research result.
 Use `total_overhead_ratio` in aggregate outputs for comparable overhead. It
 charges model+hash runs for transmitted lookback metadata and classical runs for
 repair-token budget.
+
+Dataset-backed validation on the frozen GenFEC WikiText copy:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\dataset_validation_fake `
+  --synthetic-sweep `
+  --dataset-file data\wikitext2_genfec_test_messages.json `
+  --dataset-label wikitext2_genfec_test_messages `
+  --dataset-sample-count 3 `
+  --dataset-max-tokens 128 `
+  --tokens-per-packet 4 `
+  --loss-rate 0.2 `
+  --hash-bits 4 `
+  --seed 0
+```
+
+This uses the same text artifact as GenFEC for comparability, but it tokenizes
+inside this project. LLaDA runs must use LLaDA tokenization and LLaDA-specific
+hash profiles.

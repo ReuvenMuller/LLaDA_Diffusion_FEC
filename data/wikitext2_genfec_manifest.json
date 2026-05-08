@@ -1,0 +1,27 @@
+{
+  "artifact_name": "wikitext2_genfec_test_messages",
+  "file": "wikitext2_genfec_test_messages.json",
+  "sha256": "8CB164B452F7A2BAAEAD9C95274C33CEB116424DB8635C0366CB421841D17A51",
+  "source_project": "GenFEC_Depth_Exam",
+  "source_path": "C:\\Users\\reuve\\OneDrive\\Documents\\GenFEC_Depth_Exam\\test_messages.json",
+  "source_generator": "GenFEC_Depth_Exam\\generate_dataset.py",
+  "upstream_dataset": {
+    "name": "wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "test"
+  },
+  "record_count": 100,
+  "id_field": "id",
+  "text_field": "original_message",
+  "nominal_word_count": 300,
+  "cleanup_rules": [
+    "Remove WikiText section headers.",
+    "Join non-empty text segments into one stream.",
+    "Apply GenFEC detokenization replacements for WikiText artifacts such as @-@, @,@, and @.@.",
+    "Tighten punctuation, parentheses, apostrophes, and selected symbols with regex replacements.",
+    "Remove remaining non-standard characters outside the GenFEC allow-list.",
+    "Collapse repeated whitespace.",
+    "Split into 100 consecutive samples of 300 words each."
+  ],
+  "tokenization_rule": "Tokenize separately for each model/tokenizer. Do not reuse GenFEC Qwen token counts or hash profiles."
+}

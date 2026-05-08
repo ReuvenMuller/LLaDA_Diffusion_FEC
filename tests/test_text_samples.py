@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from diffusion_fec.data.text_samples import load_text_records, tokenize_text_records
 
@@ -37,6 +38,39 @@ def test_load_text_records_from_json_container(tmp_path) -> None:
 
     assert records[0].record_id == "r1"
     assert records[0].text == "one"
+
+
+def test_load_text_records_accepts_genfec_message_schema(tmp_path) -> None:
+    path = tmp_path / "genfec_messages.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "wiki_0",
+                    "original_message": "Robert Boulter sample text.",
+                    "word_count": 4,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = load_text_records(path)
+
+    assert records[0].record_id == "wiki_0"
+    assert records[0].text == "Robert Boulter sample text."
+    assert records[0].metadata == {"word_count": 4}
+
+
+def test_frozen_genfec_wikitext_artifact_loads() -> None:
+    path = Path("data/wikitext2_genfec_test_messages.json")
+
+    records = load_text_records(path)
+
+    assert len(records) == 100
+    assert records[0].record_id == "wiki_0"
+    assert records[0].metadata["word_count"] == 300
+    assert "Robert Boulter" in records[0].text
 
 
 def test_load_text_records_from_plain_text(tmp_path) -> None:

@@ -75,6 +75,8 @@ def run_synthetic_micro_eval(
     *,
     output_dir: str | Path,
     sample_lengths: Sequence[int] = DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+    samples: Sequence[TokenSample] | None = None,
+    dataset_info: dict[str, Any] | None = None,
     loss_rate: float = 0.5,
     seed: int = 0,
     tokens_per_packet: int = DEFAULT_MICRO_EVAL_TOKENS_PER_PACKET,
@@ -99,7 +101,14 @@ def run_synthetic_micro_eval(
         loss_rate=loss_rate,
         seed=seed,
     )
-    sample_lengths = tuple(sample_lengths)
+    samples = None if samples is None else tuple(samples)
+    sample_lengths = (
+        tuple(len(sample.token_ids) for sample in samples)
+        if samples is not None
+        else tuple(sample_lengths)
+    )
+    if samples is not None:
+        _validate_token_samples(samples=samples, vocab_size=vocab_size)
     _validate_micro_eval_config(
         sample_lengths=sample_lengths,
         loss_rate=loss_rate,
@@ -165,15 +174,20 @@ def run_synthetic_micro_eval(
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
         hash_profile_info=hash_profile_info,
+        dataset_info=dataset_info,
     )
 
     result_rows: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     for case_index, sample_length in enumerate(sample_lengths):
-        sample = synthetic_sample(
-            sample_index=case_index,
-            token_count=sample_length,
-            vocab_size=vocab_size,
+        sample = (
+            samples[case_index]
+            if samples is not None
+            else synthetic_sample(
+                sample_index=case_index,
+                token_count=sample_length,
+                vocab_size=vocab_size,
+            )
         )
         model = FakeDeterministicMicroEvalModel(
             target_tokens=sample.token_ids,
@@ -294,6 +308,20 @@ def _validate_micro_eval_config(
         raise ValueError("steps must be positive")
 
 
+def _validate_token_samples(*, samples: Sequence[TokenSample], vocab_size: int) -> None:
+    if not samples:
+        raise ValueError("samples must be non-empty when supplied")
+    for sample in samples:
+        if not isinstance(sample, TokenSample):
+            raise TypeError("samples must contain TokenSample objects")
+        for token_id in sample.token_ids:
+            if token_id >= vocab_size:
+                raise ValueError(
+                    f"sample {sample.sample_id!r} contains token_id {token_id} "
+                    f"outside vocab_size={vocab_size}"
+                )
+
+
 def _unused_hash_profile_info(*, hash_bits: int, hash_map_mode: str) -> dict[str, Any]:
     return {
         "source": "not_used",
@@ -349,7 +377,18 @@ def _manifest(
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
     hash_profile_info: dict[str, Any],
+    dataset_info: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    sample_generation = {
+        "type": "provided_token_samples" if dataset_info else "deterministic_synthetic_token_ids",
+        "special_token_ids_excluded_from_samples": [
+            DEFAULT_MASK_TOKEN_ID,
+            DEFAULT_EOS_TOKEN_ID,
+            DEFAULT_PAD_TOKEN_ID,
+        ],
+    }
+    if dataset_info:
+        sample_generation["dataset"] = dict(dataset_info)
     return {
         "run_id": run_id,
         "runner": "synthetic_micro_eval",
@@ -376,14 +415,7 @@ def _manifest(
             "source_layout": source_layout.to_dict(),
             "wire_interleaving": wire_interleaving.to_dict(),
             "channel": channel_config.to_dict(),
-            "sample_generation": {
-                "type": "deterministic_synthetic_token_ids",
-                "special_token_ids_excluded_from_samples": [
-                    DEFAULT_MASK_TOKEN_ID,
-                    DEFAULT_EOS_TOKEN_ID,
-                    DEFAULT_PAD_TOKEN_ID,
-                ],
-            },
+            "sample_generation": sample_generation,
             "decoder": {
                 "type": "fake_deterministic_diffusion_shaped_decoder",
                 "block_length": max(tokens_per_packet, 1),

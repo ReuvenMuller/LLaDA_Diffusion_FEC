@@ -26,6 +26,7 @@ from diffusion_fec.coding.hash_profiles import (
 )
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME, LOOKBACK_HASH_METADATA_KEY
+from diffusion_fec.experiments.dataset_samples import load_dataset_token_samples
 from diffusion_fec.experiments.llada_smoke import (
     RealLLaDASmokeUnavailable,
     _import_torch,
@@ -69,6 +70,12 @@ def run_real_llada_micro_eval(
     allow_cpu: bool = False,
     hash_profile_dir: str | Path | None = None,
     hash_map_mode: str = DEFAULT_HASH_MAP_MODE,
+    dataset_path: str | Path | None = None,
+    dataset_label: str | None = None,
+    dataset_sample_count: int | None = None,
+    dataset_seed: int = 0,
+    dataset_min_tokens: int = 1,
+    dataset_max_tokens: int | None = None,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
     channel_config: PacketLossChannelConfig | None = None,
@@ -90,6 +97,26 @@ def run_real_llada_micro_eval(
         seed=seed,
     )
     sample_lengths = tuple(sample_lengths)
+
+    torch = torch_module or _safe_import_torch()
+    tokenizer = tokenizer_adapter or _safe_load_tokenizer_config(
+        model_id=model_id,
+        local_files_only=local_files_only,
+    )
+    tokenizer_stage = _tokenizer_stage(tokenizer)
+    samples = None
+    dataset_info = None
+    if dataset_path is not None:
+        samples, dataset_info = _load_llada_dataset_samples(
+            dataset_path=dataset_path,
+            dataset_label=dataset_label,
+            dataset_sample_count=dataset_sample_count,
+            dataset_seed=dataset_seed,
+            dataset_min_tokens=dataset_min_tokens,
+            dataset_max_tokens=dataset_max_tokens,
+            tokenizer=tokenizer,
+        )
+        sample_lengths = tuple(len(sample.token_ids) for sample in samples)
     _validate_config(
         sample_lengths=sample_lengths,
         loss_rate=loss_rate,
@@ -98,13 +125,6 @@ def run_real_llada_micro_eval(
         hash_bits=hash_bits,
         steps=steps,
     )
-
-    torch = torch_module or _safe_import_torch()
-    tokenizer = tokenizer_adapter or _safe_load_tokenizer_config(
-        model_id=model_id,
-        local_files_only=local_files_only,
-    )
-    tokenizer_stage = _tokenizer_stage(tokenizer)
     protection_mode = LOOKBACK_1_SCHEME if mode == MICRO_EVAL_MODEL_HASH else "none"
     token_hash_map = None
     hash_profile_info = _unused_hash_profile_info(hash_bits=hash_bits, hash_map_mode=hash_map_mode)
@@ -163,15 +183,20 @@ def run_real_llada_micro_eval(
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
         hash_profile_info=hash_profile_info,
+        dataset_info=dataset_info,
     )
 
     result_rows: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     for case_index, sample_length in enumerate(sample_lengths):
-        sample = _synthetic_llada_sample(
-            adapter=adapter,
-            sample_index=case_index,
-            token_count=sample_length,
+        sample = (
+            samples[case_index]
+            if samples is not None
+            else _synthetic_llada_sample(
+                adapter=adapter,
+                sample_index=case_index,
+                token_count=sample_length,
+            )
         )
         case_seed = seed + case_index
         case_channel_config = replace(channel_config, seed=case_seed)
@@ -419,6 +444,28 @@ def _synthetic_llada_sample(
     )
 
 
+def _load_llada_dataset_samples(
+    *,
+    dataset_path: str | Path,
+    dataset_label: str | None,
+    dataset_sample_count: int | None,
+    dataset_seed: int,
+    dataset_min_tokens: int,
+    dataset_max_tokens: int | None,
+    tokenizer: LLaDAAdapter,
+) -> tuple[tuple[TokenSample, ...], dict[str, Any]]:
+    return load_dataset_token_samples(
+        dataset_path=dataset_path,
+        tokenize=lambda text: tokenizer.tokenize(text, add_special_tokens=False),
+        tokenizer_name=tokenizer.model_id,
+        sample_count=dataset_sample_count,
+        seed=dataset_seed,
+        min_tokens=dataset_min_tokens,
+        max_tokens=dataset_max_tokens,
+        dataset_label=dataset_label,
+    )
+
+
 def _run_id(
     *,
     model_id: str,
@@ -469,6 +516,7 @@ def _manifest(
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
     hash_profile_info: dict[str, Any],
+    dataset_info: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -501,6 +549,7 @@ def _manifest(
             "source_layout": source_layout.to_dict(),
             "wire_interleaving": wire_interleaving.to_dict(),
             "channel": channel_config.to_dict(),
+            "sample_generation": _sample_generation_info(dataset_info),
         },
         "hash_profile": hash_profile_info,
         "artifacts": {
@@ -508,6 +557,17 @@ def _manifest(
             "results": "results.csv",
             "events": "events.jsonl",
         },
+    }
+
+
+def _sample_generation_info(dataset_info: dict[str, Any] | None) -> dict[str, Any]:
+    if dataset_info:
+        return {
+            "type": "loaded_text_dataset_tokenized_with_llada",
+            "dataset": dict(dataset_info),
+        }
+    return {
+        "type": "deterministic_synthetic_token_ids",
     }
 
 

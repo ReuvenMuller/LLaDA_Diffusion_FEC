@@ -39,6 +39,7 @@ from diffusion_fec.experiments.micro_eval import (
     MICRO_EVAL_WARNING,
     run_synthetic_micro_eval,
 )
+from diffusion_fec.types import TokenSample
 
 
 SWEEP_RUNNER_MODEL_ONLY = "llada_model_only_fake"
@@ -197,6 +198,8 @@ def run_synthetic_sweep(
     *,
     output_dir: str | Path,
     config: SyntheticSweepConfig,
+    samples: Sequence[TokenSample] | None = None,
+    dataset_info: dict[str, Any] | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Run a model-free synthetic sweep and write sweep plus analysis artifacts."""
@@ -221,6 +224,8 @@ def run_synthetic_sweep(
                 profile_dir=profile_dir,
                 profile_name=config.profile_name,
                 hash_map_mode=config.hash_map_mode,
+                samples=samples,
+                dataset_info=dataset_info,
             )
             status = "completed"
         run_rows.append(
@@ -243,6 +248,7 @@ def run_synthetic_sweep(
         "not_a_research_claim": True,
         "not_a_research_claim_warning": MICRO_EVAL_WARNING,
         "config": config.to_dict(),
+        "dataset": None if dataset_info is None else dict(dataset_info),
         "child_runs_dir": "runs",
         "analysis_dir": "analysis",
         "run_count": len(run_rows),
@@ -266,11 +272,15 @@ def _execute_spec(
     profile_dir: Path,
     profile_name: str,
     hash_map_mode: str,
+    samples: Sequence[TokenSample] | None,
+    dataset_info: dict[str, Any] | None,
 ) -> None:
     if spec.runner == SWEEP_RUNNER_MODEL_ONLY:
         run_synthetic_micro_eval(
             output_dir=output_dir,
             sample_lengths=spec.sample_lengths,
+            samples=samples,
+            dataset_info=dataset_info,
             loss_rate=spec.loss_rate,
             seed=spec.seed,
             tokens_per_packet=spec.tokens_per_packet,
@@ -288,6 +298,8 @@ def _execute_spec(
         run_synthetic_micro_eval(
             output_dir=output_dir,
             sample_lengths=spec.sample_lengths,
+            samples=samples,
+            dataset_info=dataset_info,
             loss_rate=spec.loss_rate,
             seed=spec.seed,
             tokens_per_packet=spec.tokens_per_packet,
@@ -307,6 +319,8 @@ def _execute_spec(
         run_xor_parity_micro_eval(
             output_dir=output_dir,
             sample_lengths=spec.sample_lengths,
+            samples=samples,
+            dataset_info=dataset_info,
             loss_rate=spec.loss_rate,
             seed=spec.seed,
             tokens_per_packet=spec.tokens_per_packet,
@@ -323,6 +337,8 @@ def _execute_spec(
         run_lt_fountain_micro_eval(
             output_dir=output_dir,
             sample_lengths=spec.sample_lengths,
+            samples=samples,
+            dataset_info=dataset_info,
             loss_rate=spec.loss_rate,
             seed=spec.seed,
             tokens_per_packet=spec.tokens_per_packet,
@@ -339,6 +355,8 @@ def _execute_spec(
     run_streaming_window_micro_eval(
         output_dir=output_dir,
         sample_lengths=spec.sample_lengths,
+        samples=samples,
+        dataset_info=dataset_info,
         loss_rate=spec.loss_rate,
         seed=spec.seed,
         tokens_per_packet=spec.tokens_per_packet,

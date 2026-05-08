@@ -217,6 +217,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llada-local-files-only", action="store_true")
     parser.add_argument("--allow-cpu-real-llada", action="store_true")
     parser.add_argument("--sample-count", type=int, default=2)
+    parser.add_argument("--dataset-file")
+    parser.add_argument("--dataset-label")
+    parser.add_argument("--dataset-sample-count", type=int)
+    parser.add_argument("--dataset-seed", type=int, default=0)
+    parser.add_argument("--dataset-min-tokens", type=int, default=1)
+    parser.add_argument("--dataset-max-tokens", type=int)
     parser.add_argument("--loss-rate", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--tokens-per-packet", type=int, default=1)
@@ -287,6 +293,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sweep-include-burst", action="store_true")
     parser.add_argument("--sweep-overwrite", action="store_true")
     args = parser.parse_args(argv)
+    dataset_samples = None
+    dataset_info = None
+    if args.dataset_file and not args.real_llada_micro_eval and not args.real_llada_smoke:
+        dataset_samples, dataset_info = _fake_dataset_samples_from_args(args)
 
     selected_runners = [
         args.micro_eval,
@@ -331,7 +341,11 @@ def main(argv: list[str] | None = None) -> int:
         config = build_synthetic_sweep_config(
             sample_lengths=_parse_sample_lengths(
                 args.sample_lengths,
-                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+                default=(
+                    tuple(len(sample.token_ids) for sample in dataset_samples)
+                    if dataset_samples is not None
+                    else DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS
+                ),
             ),
             loss_rates=_parse_float_list(args.sweep_loss_rates, default=(args.loss_rate,)),
             seed=args.seed,
@@ -352,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
         run_synthetic_sweep(
             output_dir=args.output_dir,
             config=config,
+            samples=dataset_samples,
+            dataset_info=dataset_info,
             overwrite=args.sweep_overwrite,
         )
         return 0
@@ -361,8 +377,14 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             sample_lengths=_parse_sample_lengths(
                 args.sample_lengths,
-                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+                default=(
+                    tuple(len(sample.token_ids) for sample in dataset_samples)
+                    if dataset_samples is not None
+                    else DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS
+                ),
             ),
+            samples=dataset_samples,
+            dataset_info=dataset_info,
             loss_rate=args.loss_rate,
             seed=args.seed,
             tokens_per_packet=args.tokens_per_packet,
@@ -387,8 +409,14 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             sample_lengths=_parse_sample_lengths(
                 args.sample_lengths,
-                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+                default=(
+                    tuple(len(sample.token_ids) for sample in dataset_samples)
+                    if dataset_samples is not None
+                    else DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS
+                ),
             ),
+            samples=dataset_samples,
+            dataset_info=dataset_info,
             loss_rate=args.loss_rate,
             seed=args.seed,
             tokens_per_packet=args.tokens_per_packet,
@@ -409,8 +437,14 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             sample_lengths=_parse_sample_lengths(
                 args.sample_lengths,
-                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+                default=(
+                    tuple(len(sample.token_ids) for sample in dataset_samples)
+                    if dataset_samples is not None
+                    else DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS
+                ),
             ),
+            samples=dataset_samples,
+            dataset_info=dataset_info,
             loss_rate=args.loss_rate,
             seed=args.seed,
             tokens_per_packet=args.tokens_per_packet,
@@ -432,8 +466,14 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             sample_lengths=_parse_sample_lengths(
                 args.sample_lengths,
-                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+                default=(
+                    tuple(len(sample.token_ids) for sample in dataset_samples)
+                    if dataset_samples is not None
+                    else DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS
+                ),
             ),
+            samples=dataset_samples,
+            dataset_info=dataset_info,
             loss_rate=args.loss_rate,
             seed=args.seed,
             tokens_per_packet=args.tokens_per_packet,
@@ -477,6 +517,12 @@ def main(argv: list[str] | None = None) -> int:
                 allow_cpu=args.allow_cpu_real_llada,
                 hash_profile_dir=args.hash_profile_dir,
                 hash_map_mode=args.hash_map_mode,
+                dataset_path=args.dataset_file,
+                dataset_label=args.dataset_label,
+                dataset_sample_count=args.dataset_sample_count,
+                dataset_seed=args.dataset_seed,
+                dataset_min_tokens=args.dataset_min_tokens,
+                dataset_max_tokens=args.dataset_max_tokens,
                 source_layout=_source_layout_from_args(args),
                 wire_interleaving=_wire_interleaving_from_args(args),
                 channel_config=_channel_config_from_args(args),
@@ -566,6 +612,25 @@ def _parse_string_list(raw: str | None, *, default: Sequence[str]) -> tuple[str,
     if not values:
         raise ValueError("string list must contain at least one value")
     return values
+
+
+def _fake_dataset_samples_from_args(args: argparse.Namespace):
+    from diffusion_fec.experiments.dataset_samples import (
+        FAKE_DATASET_TOKENIZER_NAME,
+        fake_tokenize_text,
+        load_dataset_token_samples,
+    )
+
+    return load_dataset_token_samples(
+        dataset_path=args.dataset_file,
+        tokenize=lambda text: fake_tokenize_text(text, vocab_size=args.vocab_size),
+        tokenizer_name=FAKE_DATASET_TOKENIZER_NAME,
+        sample_count=args.dataset_sample_count,
+        seed=args.dataset_seed,
+        min_tokens=args.dataset_min_tokens,
+        max_tokens=args.dataset_max_tokens,
+        dataset_label=args.dataset_label,
+    )
 
 
 def _source_layout_from_args(args: argparse.Namespace) -> SourceLayoutConfig:

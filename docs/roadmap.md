@@ -33,6 +33,9 @@ Done:
 - LT/fountain-style baseline codec and synthetic micro-eval runner
 - streaming-window matched-overhead baseline codec and synthetic micro-eval runner
 - deterministic text-record loading utilities
+- frozen GenFEC WikiText-derived validation artifact copied into `data/`
+- dataset-backed token sample loading for fake, classical, and real LLaDA
+  micro-eval paths
 - result aggregation helpers for sweep CSVs
 - deterministic synthetic sweep orchestration for the main comparison set
 - analysis report artifacts: aggregate CSV, markdown summary, SVG metric plots,
@@ -200,10 +203,12 @@ The implementation framework is ready for first frozen server sweeps.
 
 Recommended next operations:
 
+- run dataset-backed fake/classical validation on the frozen WikiText artifact
 - build or verify LLaDA hash profiles for 4, 8, and 16 bits
-- run model-only and model+hash real LLaDA micro-evals under frozen configs
-- run classical matched-overhead synthetic or dataset-backed baselines with the
-  same channel/interleaving settings
+- run model-only and model+hash real LLaDA dataset-backed micro-evals under
+  frozen configs
+- run classical matched-overhead dataset-backed baselines with the same
+  channel/interleaving settings
 - aggregate all run roots with `python -m diffusion_fec.analysis.report`
 - compare overhead with `total_overhead_ratio`, not repair overhead alone
 - inspect `failure_examples.jsonl` before making research claims

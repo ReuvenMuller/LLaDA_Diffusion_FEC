@@ -41,7 +41,7 @@ from diffusion_fec.experiments.micro_eval import (
     synthetic_sample,
 )
 from diffusion_fec.metrics.token_metrics import TokenMetrics, compute_token_metrics
-from diffusion_fec.types import ReconstructionPlan
+from diffusion_fec.types import ReconstructionPlan, TokenSample
 
 
 XOR_PARITY_MODEL_LABEL = "ClassicalXORParity"
@@ -56,6 +56,8 @@ def run_xor_parity_micro_eval(
     *,
     output_dir: str | Path,
     sample_lengths: Sequence[int] = DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+    samples: Sequence[TokenSample] | None = None,
+    dataset_info: dict[str, Any] | None = None,
     loss_rate: float = 0.5,
     seed: int = 0,
     tokens_per_packet: int = DEFAULT_MICRO_EVAL_TOKENS_PER_PACKET,
@@ -76,7 +78,12 @@ def run_xor_parity_micro_eval(
         loss_rate=loss_rate,
         seed=seed,
     )
-    sample_lengths = tuple(sample_lengths)
+    samples = None if samples is None else tuple(samples)
+    sample_lengths = _resolve_sample_lengths(
+        sample_lengths=sample_lengths,
+        samples=samples,
+        vocab_size=vocab_size,
+    )
     _validate_config(
         sample_lengths=sample_lengths,
         loss_rate=loss_rate,
@@ -113,14 +120,16 @@ def run_xor_parity_micro_eval(
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
         xor_config=xor_config,
+        dataset_info=dataset_info,
     )
 
     result_rows: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     for case_index, sample_length in enumerate(sample_lengths):
-        sample = synthetic_sample(
-            sample_index=case_index,
-            token_count=sample_length,
+        sample = _sample_for_case(
+            samples=samples,
+            case_index=case_index,
+            sample_length=sample_length,
             vocab_size=vocab_size,
         )
         encoded = encode_xor_parity(
@@ -207,6 +216,8 @@ def run_lt_fountain_micro_eval(
     *,
     output_dir: str | Path,
     sample_lengths: Sequence[int] = DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+    samples: Sequence[TokenSample] | None = None,
+    dataset_info: dict[str, Any] | None = None,
     loss_rate: float = 0.5,
     seed: int = 0,
     tokens_per_packet: int = DEFAULT_MICRO_EVAL_TOKENS_PER_PACKET,
@@ -228,7 +239,12 @@ def run_lt_fountain_micro_eval(
         loss_rate=loss_rate,
         seed=seed,
     )
-    sample_lengths = tuple(sample_lengths)
+    samples = None if samples is None else tuple(samples)
+    sample_lengths = _resolve_sample_lengths(
+        sample_lengths=sample_lengths,
+        samples=samples,
+        vocab_size=vocab_size,
+    )
     _validate_config(
         sample_lengths=sample_lengths,
         loss_rate=loss_rate,
@@ -266,14 +282,16 @@ def run_lt_fountain_micro_eval(
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
         lt_config=lt_config,
+        dataset_info=dataset_info,
     )
 
     result_rows: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     for case_index, sample_length in enumerate(sample_lengths):
-        sample = synthetic_sample(
-            sample_index=case_index,
-            token_count=sample_length,
+        sample = _sample_for_case(
+            samples=samples,
+            case_index=case_index,
+            sample_length=sample_length,
             vocab_size=vocab_size,
         )
         encoded = encode_lt_fountain(
@@ -360,6 +378,8 @@ def run_streaming_window_micro_eval(
     *,
     output_dir: str | Path,
     sample_lengths: Sequence[int] = DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+    samples: Sequence[TokenSample] | None = None,
+    dataset_info: dict[str, Any] | None = None,
     loss_rate: float = 0.5,
     seed: int = 0,
     tokens_per_packet: int = DEFAULT_MICRO_EVAL_TOKENS_PER_PACKET,
@@ -380,7 +400,12 @@ def run_streaming_window_micro_eval(
         loss_rate=loss_rate,
         seed=seed,
     )
-    sample_lengths = tuple(sample_lengths)
+    samples = None if samples is None else tuple(samples)
+    sample_lengths = _resolve_sample_lengths(
+        sample_lengths=sample_lengths,
+        samples=samples,
+        vocab_size=vocab_size,
+    )
     _validate_config(
         sample_lengths=sample_lengths,
         loss_rate=loss_rate,
@@ -417,14 +442,16 @@ def run_streaming_window_micro_eval(
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
         stream_config=stream_config,
+        dataset_info=dataset_info,
     )
 
     result_rows: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     for case_index, sample_length in enumerate(sample_lengths):
-        sample = synthetic_sample(
-            sample_index=case_index,
-            token_count=sample_length,
+        sample = _sample_for_case(
+            samples=samples,
+            case_index=case_index,
+            sample_length=sample_length,
             vocab_size=vocab_size,
         )
         encoded = encode_streaming_window(
@@ -532,6 +559,44 @@ def _validate_config(
         raise ValueError("vocab_size must be greater than 16 for synthetic samples")
 
 
+def _resolve_sample_lengths(
+    *,
+    sample_lengths: Sequence[int],
+    samples: Sequence[TokenSample] | None,
+    vocab_size: int,
+) -> tuple[int, ...]:
+    if samples is None:
+        return tuple(sample_lengths)
+    if not samples:
+        raise ValueError("samples must be non-empty when supplied")
+    for sample in samples:
+        if not isinstance(sample, TokenSample):
+            raise TypeError("samples must contain TokenSample objects")
+        for token_id in sample.token_ids:
+            if token_id >= vocab_size:
+                raise ValueError(
+                    f"sample {sample.sample_id!r} contains token_id {token_id} "
+                    f"outside vocab_size={vocab_size}"
+                )
+    return tuple(len(sample.token_ids) for sample in samples)
+
+
+def _sample_for_case(
+    *,
+    samples: Sequence[TokenSample] | None,
+    case_index: int,
+    sample_length: int,
+    vocab_size: int,
+) -> TokenSample:
+    if samples is not None:
+        return samples[case_index]
+    return synthetic_sample(
+        sample_index=case_index,
+        token_count=sample_length,
+        vocab_size=vocab_size,
+    )
+
+
 def _tokens_from_plan(plan: ReconstructionPlan) -> tuple[int, ...]:
     return tuple(
         entry.token_id if entry.token_id is not None else DEFAULT_MASK_TOKEN_ID
@@ -581,6 +646,7 @@ def _manifest(
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
     xor_config: XorParityConfig,
+    dataset_info: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -605,6 +671,7 @@ def _manifest(
             "wire_interleaving": wire_interleaving.to_dict(),
             "channel": channel_config.to_dict(),
             "xor_parity": xor_config.to_dict(),
+            "sample_generation": _sample_generation_info(dataset_info),
         },
         "artifacts": {
             "manifest": "run_manifest.json",
@@ -657,6 +724,7 @@ def _lt_manifest(
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
     lt_config: LTFountainConfig,
+    dataset_info: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -681,6 +749,7 @@ def _lt_manifest(
             "wire_interleaving": wire_interleaving.to_dict(),
             "channel": channel_config.to_dict(),
             "lt_fountain": lt_config.to_dict(),
+            "sample_generation": _sample_generation_info(dataset_info),
         },
         "artifacts": {
             "manifest": "run_manifest.json",
@@ -731,6 +800,7 @@ def _stream_manifest(
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
     stream_config: StreamingWindowConfig,
+    dataset_info: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -755,12 +825,24 @@ def _stream_manifest(
             "wire_interleaving": wire_interleaving.to_dict(),
             "channel": channel_config.to_dict(),
             "streaming_window": stream_config.to_dict(),
+            "sample_generation": _sample_generation_info(dataset_info),
         },
         "artifacts": {
             "manifest": "run_manifest.json",
             "results": "results.csv",
             "events": "events.jsonl",
         },
+    }
+
+
+def _sample_generation_info(dataset_info: dict[str, Any] | None) -> dict[str, Any]:
+    if dataset_info:
+        return {
+            "type": "provided_token_samples",
+            "dataset": dict(dataset_info),
+        }
+    return {
+        "type": "deterministic_synthetic_token_ids",
     }
 
 

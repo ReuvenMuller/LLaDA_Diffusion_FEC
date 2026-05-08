@@ -135,13 +135,33 @@ def _record_from_json_value(data: Any, *, default_id: str) -> TextRecord:
         return TextRecord(record_id=default_id, text=data)
     if not isinstance(data, dict):
         raise ValueError("text dataset items must be strings or objects")
-    text = data.get("text")
+    text = _text_from_record(data)
     if not isinstance(text, str):
-        raise ValueError("text dataset object is missing string field 'text'")
+        raise ValueError(
+            "text dataset object is missing a string text field "
+            "('text', 'original_message', 'target_message', 'full_message', or 'message')"
+        )
     record_id = data.get("sample_id", data.get("id", data.get("record_id", default_id)))
     metadata = {
         key: value
         for key, value in data.items()
-        if key not in {"sample_id", "id", "record_id", "text"}
+        if key not in {
+            "sample_id",
+            "id",
+            "record_id",
+            "text",
+            "original_message",
+            "target_message",
+            "full_message",
+            "message",
+        }
     }
     return TextRecord(record_id=str(record_id), text=text, metadata=metadata)
+
+
+def _text_from_record(data: dict[str, Any]) -> str | None:
+    for field in ("text", "original_message", "target_message", "full_message", "message"):
+        value = data.get(field)
+        if isinstance(value, str):
+            return value
+    return None

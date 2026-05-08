@@ -46,6 +46,9 @@ class FakeLLaDAAdapter:
     vocab_size = 32
     max_sequence_length = 64
 
+    def tokenize(self, text, add_special_tokens=False):
+        return [3 + (ord(character) % (self.vocab_size - 3)) for character in text]
+
     def decode(self, token_ids, skip_special_tokens=False):
         return " ".join(str(token_id) for token_id in token_ids)
 
@@ -196,6 +199,50 @@ def test_real_llada_micro_eval_model_only_does_not_require_profile(tmp_path) -> 
     assert rows[0]["unguided_count"] == "2"
     assert rows[0]["hash_metadata_count"] == "0"
     assert float(rows[0]["total_overhead_ratio"]) == 0.0
+
+
+def test_real_llada_micro_eval_can_tokenize_dataset_samples(tmp_path) -> None:
+    dataset_path = tmp_path / "genfec_messages.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "wiki_0",
+                    "original_message": "abc def",
+                    "word_count": 2,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "run"
+
+    run_real_llada_micro_eval(
+        output_dir=output_dir,
+        model_id=MODEL_ID,
+        mode=MICRO_EVAL_MODEL_ONLY,
+        loss_rate=0.0,
+        seed=1,
+        tokens_per_packet=2,
+        hash_bits=4,
+        steps=2,
+        dataset_path=dataset_path,
+        dataset_label="test_wikitext_copy",
+        dataset_sample_count=1,
+        dataset_max_tokens=4,
+        torch_module=FakeTorch(),
+        tokenizer_adapter=FakeLLaDAAdapter(),
+        model_adapter=FakeLLaDAAdapter(),
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    rows = read_csv(output_dir / "results.csv")
+
+    assert manifest["config"]["sample_generation"]["type"] == "loaded_text_dataset_tokenized_with_llada"
+    assert manifest["config"]["sample_generation"]["dataset"]["sample_ids"] == ["wiki_0"]
+    assert manifest["config"]["sample_lengths"] == [4]
+    assert rows[0]["sample_id"] == "wiki_0"
+    assert rows[0]["source_token_count"] == "4"
 
 
 def test_runner_routes_real_llada_micro_eval_without_loading_model(monkeypatch, tmp_path) -> None:

@@ -268,6 +268,34 @@ python -m pytest tests\test_llada_e2e_smoke.py -q
 Text records can be loaded from JSONL, JSON, or plain text with
 `diffusion_fec.data.load_text_records(...)`. Convert them to `TokenSample`
 objects with `tokenize_text_records(...)` by passing a tokenizer callback.
+The loader accepts this project's generic `text` schema and the GenFEC
+`original_message` schema.
+
+The frozen GenFEC WikiText-derived dataset copy lives at:
+
+```text
+data/wikitext2_genfec_test_messages.json
+```
+
+Run a local dataset-backed validation sweep:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\dataset_validation_fake `
+  --synthetic-sweep `
+  --dataset-file data\wikitext2_genfec_test_messages.json `
+  --dataset-label wikitext2_genfec_test_messages `
+  --dataset-sample-count 3 `
+  --dataset-max-tokens 128 `
+  --tokens-per-packet 4 `
+  --loss-rate 0.2 `
+  --hash-bits 4 `
+  --seed 0
+```
+
+For real LLaDA dataset-backed validation, pass the same `--dataset-*` options to
+`--real-llada-micro-eval`. The LLaDA adapter tokenizes the loaded text and
+records sample IDs/token counts in the manifest.
 
 Result CSVs can be aggregated with:
 

@@ -120,3 +120,51 @@ def test_synthetic_sweep_cli_allows_gilbert_elliott(tmp_path) -> None:
     assert exit_code == 0
     assert len(rows) == 1
     assert child_results[0]["channel_mode"] == CHANNEL_GILBERT_ELLIOTT
+
+
+def test_synthetic_sweep_cli_uses_dataset_samples(tmp_path) -> None:
+    dataset_path = tmp_path / "genfec_messages.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {"id": "wiki_0", "original_message": "alpha beta gamma", "word_count": 3},
+                {"id": "wiki_1", "original_message": "delta epsilon zeta", "word_count": 3},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "dataset_sweep"
+
+    exit_code = main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--synthetic-sweep",
+            "--dataset-file",
+            str(dataset_path),
+            "--dataset-label",
+            "test_wikitext_copy",
+            "--dataset-sample-count",
+            "2",
+            "--dataset-max-tokens",
+            "12",
+            "--vocab-size",
+            "64",
+            "--tokens-per-packet",
+            "3",
+            "--sweep-runners",
+            f"{SWEEP_RUNNER_MODEL_ONLY},{SWEEP_RUNNER_XOR_PARITY}",
+        ]
+    )
+
+    manifest = read_json(output_dir / "sweep_manifest.json")
+    rows = read_csv(output_dir / "sweep_runs.csv")
+    first_child_rows = read_csv(output_dir / rows[0]["results"])
+    first_child_manifest = read_json(output_dir / rows[0]["output_dir"] / "run_manifest.json")
+
+    assert exit_code == 0
+    assert manifest["dataset"]["dataset_label"] == "test_wikitext_copy"
+    assert manifest["dataset"]["sample_ids"] == ["wiki_0", "wiki_1"]
+    assert first_child_rows[0]["sample_id"] == "wiki_0"
+    assert int(first_child_rows[0]["source_token_count"]) <= 12
+    assert first_child_manifest["config"]["sample_generation"]["type"] == "provided_token_samples"

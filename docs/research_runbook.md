@@ -80,6 +80,40 @@ runs/<sweep>/
 The sweep is skip-aware by default. Add `--sweep-overwrite` to rerun completed
 child runs.
 
+## Dataset-Backed Validation
+
+The frozen GenFEC WikiText-derived text artifact is copied into this project:
+
+```text
+data/wikitext2_genfec_test_messages.json
+data/wikitext2_genfec_manifest.json
+```
+
+It contains 100 WikiText-2 raw test samples with IDs such as `wiki_0`. The text
+field is `original_message`. This artifact is shared with GenFEC for
+comparability, but tokenization is model-specific. Do not reuse Qwen token
+counts or Qwen hash profiles.
+
+Run a local model-free validation on real sample geometry:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\dataset_validation_fake `
+  --synthetic-sweep `
+  --dataset-file data\wikitext2_genfec_test_messages.json `
+  --dataset-label wikitext2_genfec_test_messages `
+  --dataset-sample-count 3 `
+  --dataset-max-tokens 128 `
+  --tokens-per-packet 4 `
+  --loss-rate 0.2 `
+  --hash-bits 4 `
+  --seed 0
+```
+
+The fake validation tokenizer is deterministic and local-only. It exists to
+check packetization, loss, overhead, artifacts, and analysis on real text sample
+geometry before loading LLaDA.
+
 ## Analysis Artifacts
 
 Build analysis artifacts for any directory containing run outputs:
@@ -169,6 +203,42 @@ python -m diffusion_fec.experiments.runner \
   --llada-local-files-only \
   --sample-lengths 8 \
   --tokens-per-packet 1 \
+  --hash-bits 4 \
+  --steps 2 \
+  --seed 0
+```
+
+Dataset-backed model-only command:
+
+```bash
+python -m diffusion_fec.experiments.runner \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_dataset_model_only_smoke \
+  --real-llada-micro-eval \
+  --micro-eval-mode model_only \
+  --dataset-file data/wikitext2_genfec_test_messages.json \
+  --dataset-label wikitext2_genfec_test_messages \
+  --dataset-sample-count 1 \
+  --dataset-max-tokens 64 \
+  --llada-local-files-only \
+  --tokens-per-packet 4 \
+  --hash-bits 4 \
+  --steps 2 \
+  --seed 0
+```
+
+Dataset-backed model+hash command:
+
+```bash
+python -m diffusion_fec.experiments.runner \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_dataset_hash4_smoke \
+  --real-llada-micro-eval \
+  --hash-profile-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/hash_profiles/llada_1_5_real_v1 \
+  --dataset-file data/wikitext2_genfec_test_messages.json \
+  --dataset-label wikitext2_genfec_test_messages \
+  --dataset-sample-count 1 \
+  --dataset-max-tokens 64 \
+  --llada-local-files-only \
+  --tokens-per-packet 4 \
   --hash-bits 4 \
   --steps 2 \
   --seed 0
