@@ -10,7 +10,7 @@ import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
 from diffusion_fec.coding.packetizer import (
@@ -201,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--micro-eval", action="store_true")
     parser.add_argument("--real-llada-smoke", action="store_true")
+    parser.add_argument("--real-llada-micro-eval", action="store_true")
     parser.add_argument("--llada-model-id", default="GSAI-ML/LLaDA-1.5")
     parser.add_argument("--llada-local-files-only", action="store_true")
     parser.add_argument("--allow-cpu-real-llada", action="store_true")
@@ -218,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hash-profile-name")
     parser.add_argument(
         "--sample-lengths",
-        default=",".join(str(length) for length in DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS),
+        default=None,
         help="Comma-separated synthetic micro-eval sample lengths.",
     )
     parser.add_argument(
@@ -240,13 +241,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wire-interleaving-span", type=int, default=4)
     args = parser.parse_args(argv)
 
-    if args.micro_eval and args.real_llada_smoke:
-        parser.error("--micro-eval and --real-llada-smoke are separate runners")
+    selected_runners = [
+        args.micro_eval,
+        args.real_llada_smoke,
+        args.real_llada_micro_eval,
+    ]
+    if sum(1 for selected in selected_runners if selected) > 1:
+        parser.error("--micro-eval, --real-llada-smoke, and --real-llada-micro-eval are separate runners")
 
     if args.micro_eval:
         run_synthetic_micro_eval(
             output_dir=args.output_dir,
-            sample_lengths=_parse_sample_lengths(args.sample_lengths),
+            sample_lengths=_parse_sample_lengths(
+                args.sample_lengths,
+                default=DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+            ),
             loss_rate=args.loss_rate,
             seed=args.seed,
             tokens_per_packet=args.tokens_per_packet,
@@ -261,6 +270,44 @@ def main(argv: list[str] | None = None) -> int:
             hash_map_mode=args.hash_map_mode,
             hash_profile_name=args.hash_profile_name or "fake_micro_eval_v1",
         )
+        return 0
+
+    if args.real_llada_micro_eval:
+        if args.build_hash_profile:
+            parser.error(
+                "--build-hash-profile is not allowed for real LLaDA micro-eval; "
+                "build profiles ahead of time and pass --hash-profile-dir"
+            )
+        from diffusion_fec.experiments.llada_micro_eval import (
+            DEFAULT_REAL_LLADA_MICRO_EVAL_SAMPLE_LENGTHS,
+            RealLLaDAMicroEvalUnavailable,
+            run_real_llada_micro_eval,
+        )
+
+        try:
+            run_real_llada_micro_eval(
+                output_dir=args.output_dir,
+                model_id=args.llada_model_id,
+                sample_lengths=_parse_sample_lengths(
+                    args.sample_lengths,
+                    default=DEFAULT_REAL_LLADA_MICRO_EVAL_SAMPLE_LENGTHS,
+                ),
+                loss_rate=args.loss_rate,
+                seed=args.seed,
+                tokens_per_packet=args.tokens_per_packet,
+                mode=args.micro_eval_mode,
+                hash_bits=args.hash_bits,
+                steps=args.steps,
+                local_files_only=args.llada_local_files_only,
+                allow_cpu=args.allow_cpu_real_llada,
+                hash_profile_dir=args.hash_profile_dir,
+                hash_map_mode=args.hash_map_mode,
+                source_layout=_source_layout_from_args(args),
+                wire_interleaving=_wire_interleaving_from_args(args),
+            )
+        except RealLLaDAMicroEvalUnavailable as exc:
+            print(f"Real LLaDA micro-eval unavailable: {exc}", file=sys.stderr)
+            return 2
         return 0
 
     if args.real_llada_smoke:
@@ -308,7 +355,9 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _parse_sample_lengths(raw: str) -> tuple[int, ...]:
+def _parse_sample_lengths(raw: str | None, *, default: Sequence[int]) -> tuple[int, ...]:
+    if raw is None:
+        return tuple(default)
     values: list[int] = []
     for item in raw.split(","):
         item = item.strip()

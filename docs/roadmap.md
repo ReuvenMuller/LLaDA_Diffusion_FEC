@@ -23,11 +23,12 @@ Done:
 - packet-level matrix/span wire interleaving
 - deterministic burst-loss helper over wire IDs for interleaving validation
 - model-free synthetic micro-eval runner with model-only and model+hash modes
+- opt-in real LLaDA synthetic micro-eval runner with loaded-profile enforcement
 
 Not done:
 
 - runner-integrated burst and Gilbert-Elliott packet channels
-- opt-in real LLaDA micro-eval runner
+- real LLaDA micro-eval execution on the GPU server after this runner update
 - real text dataset sampling
 - classical matched-overhead baselines
 - larger server sweeps
@@ -130,7 +131,9 @@ Requirements:
 - record latency, model forward calls, token counts, known/hash-guided/unguided
   counts, and profile metadata
 
-Status: next major implementation phase.
+Status: implemented at the framework level. It is opt-in, loads profiles only,
+records latency/model-forward metadata, and keeps default tests model-free. The
+next operational step is running it on the GPU server.
 
 ### Phase 4: Channels
 
@@ -169,14 +172,15 @@ Freeze configs and hash profiles before final research runs.
 
 ## Immediate Next Phase
 
-Implement Phase 3 and the runner-facing part of Phase 4:
+Run the real micro-eval on the GPU server, then implement the runner-facing part
+of Phase 4:
 
-- add opt-in real LLaDA micro-eval mode using the synthetic micro-eval config surface
-- require prebuilt loaded hash profiles for real hash modes
-- fail clearly for missing CUDA, Hugging Face cache/model files, or hash profiles
-- record latency, model forward calls, steps, token counts, and profile metadata
-- expose channel config in micro-eval manifests
 - add runner-level burst channel support after the real path is stable
+- add Gilbert-Elliott loss
+- expose channel config in micro-eval manifests and CLI
+- verify that packet-level wire interleaving changes burst-loss geometry in
+  runner artifacts
+- verify that source/token layout changes erased-token geometry in runner artifacts
 
 Acceptance:
 

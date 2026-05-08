@@ -75,6 +75,10 @@ On later runs, omit `--build-hash-profile` to require loading the existing map.
 If the requested map is missing, the runner fails clearly instead of silently
 creating a different profile.
 
+Real LLaDA micro-evals are stricter: `--real-llada-micro-eval` never accepts
+`--build-hash-profile`. Build or verify the profile first, then pass the profile
+directory to the micro-eval command.
+
 ## Policy
 
 - Use profile loading for real experiment sweeps.
@@ -82,4 +86,3 @@ creating a different profile.
 - Use live batch-building only when no profile directory is provided.
 - Keep profile directories tied to one tokenizer/model/salt/exclusion set.
 - Build separate maps for `hash_bits` 4, 8, and 16 when comparing overheads.
-

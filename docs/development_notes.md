@@ -151,6 +151,24 @@ python -m diffusion_fec.experiments.runner `
 These micro-evals use the fake deterministic model and are engineering
 validation only.
 
+Current opt-in real LLaDA synthetic micro-eval:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\real_llada_micro_eval `
+  --real-llada-micro-eval `
+  --hash-profile-dir runs\hash_profiles\llada_1_5_smoke_v1 `
+  --llada-local-files-only `
+  --sample-lengths 8 `
+  --tokens-per-packet 1 `
+  --hash-bits 4 `
+  --steps 2
+```
+
+Real micro-eval hash mode requires an existing profile and will not build one
+while loading/running LLaDA. Use `--micro-eval-mode model_only` for a model-only
+comparison path with no hash profile.
+
 Current opt-in pytest smoke:
 
 ```powershell

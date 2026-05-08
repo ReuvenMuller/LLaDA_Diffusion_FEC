@@ -132,3 +132,23 @@ Current interpretation:
 - A Hugging Face token is optional but may improve download behavior and rate
   limits.
 
+## Next Server Micro-Eval Command
+
+After pulling the latest repository state on the server and activating the
+project venv, run a tiny loaded-profile micro-eval:
+
+```bash
+python -m diffusion_fec.experiments.runner \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_micro_eval_loaded_hash \
+  --real-llada-micro-eval \
+  --hash-profile-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/hash_profiles/llada_1_5_smoke_v1 \
+  --llada-local-files-only \
+  --sample-lengths 8 \
+  --tokens-per-packet 1 \
+  --hash-bits 4 \
+  --steps 2
+```
+
+Use `--micro-eval-mode model_only` to run the matching model-only path without a
+hash profile. These micro-evals are engineering validation only, not research
+claims.
