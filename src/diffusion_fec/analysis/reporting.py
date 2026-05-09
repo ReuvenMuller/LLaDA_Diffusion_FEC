@@ -19,6 +19,8 @@ DEFAULT_REPORT_GROUP_BY = (
     "wire_interleaving",
     "loss_rate",
     "hash_bits",
+    "editable_update_mode",
+    "hash_constraint_schedule",
 )
 SUMMARY_FIELDS = (
     "strategy",
@@ -28,6 +30,8 @@ SUMMARY_FIELDS = (
     "wire_interleaving",
     "loss_rate",
     "hash_bits",
+    "editable_update_mode",
+    "hash_constraint_schedule",
     "case_count",
     "exact_match_rate",
     "mean_lost_position_recovery_rate",
