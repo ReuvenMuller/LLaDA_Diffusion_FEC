@@ -178,6 +178,33 @@ All real rows preserved known tokens, left zero mask tokens, and used two model
 forward calls. This is a healthy dataset-backed validation result, but it is
 still not a final research claim.
 
+### Completed Steps=8 Iteration Validation
+
+A follow-up iteration-count validation completed on the GPU server on
+2026-05-09. It reused the same frozen 10-sample artifact, hash profile
+directory, IID loss rate, packet size, and seed as the steps=2 pass above, but
+changed decoder steps from `2` to `8`.
+
+Run root:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-steps8-20260509_031600
+```
+
+Mean real LLaDA validation results were:
+
+| strategy | lost recovery | token edit distance | total overhead | decode latency sec | run wall sec | forward calls |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| model only | 0.2736 | 48.7 | 0.0000 | 4.0762 | 124.4773 | 8 |
+| hash4 | 0.4347 | 38.3 | 0.2279 | 3.3574 | 116.6101 | 8 |
+| hash8 | 0.5871 | 28.3 | 0.4559 | 3.0708 | 112.1183 | 8 |
+| hash16 | 0.6451 | 24.6 | 0.9118 | 3.2705 | 116.8302 | 8 |
+
+Compared with steps=2, hash8 and hash16 improved mean recovery/edit distance,
+while model-only and hash4 slipped slightly. All rows still preserved known
+tokens and left zero mask tokens. This is useful iteration-count validation, not
+a final research result.
+
 ## Analysis Artifacts
 
 Build analysis artifacts for any directory containing run outputs:
