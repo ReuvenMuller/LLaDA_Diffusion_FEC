@@ -29,7 +29,14 @@ from diffusion_fec.coding.packetizer import (
     WireInterleavingConfig,
 )
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME
-from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
+from diffusion_fec.decoding.llada_diffusion import (
+    EDITABLE_UPDATE_COMMIT_ONCE,
+    EDITABLE_UPDATE_RESAMPLE_EACH_STEP,
+    HASH_CONSTRAINT_ALWAYS,
+    HASH_CONSTRAINT_FINAL_ONLY,
+    HASH_CONSTRAINT_LATE_HALF,
+    DiffusionDecodingConfig,
+)
 from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
 from diffusion_fec.experiments.micro_eval import (
     DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
@@ -111,6 +118,8 @@ def run_minimal_smoke(
     hash_bits: int = 4,
     vocab_size: int = DEFAULT_VOCAB_SIZE,
     steps: int = 4,
+    editable_update_mode: str = EDITABLE_UPDATE_COMMIT_ONCE,
+    hash_constraint_schedule: str = HASH_CONSTRAINT_ALWAYS,
     hash_profile_dir: str | Path | None = None,
     build_hash_profile: bool = False,
     hash_map_mode: str = DEFAULT_HASH_MAP_MODE,
@@ -136,6 +145,8 @@ def run_minimal_smoke(
         vocab_size=vocab_size,
         steps=steps,
         block_length=max(tokens_per_packet, 1),
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
     )
     excluded_token_ids = {
         DEFAULT_MASK_TOKEN_ID,
@@ -162,6 +173,8 @@ def run_minimal_smoke(
         tokens_per_packet=tokens_per_packet,
         protection_mode=protection_mode,
         hash_bits=hash_bits,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
     )
     manifest = _manifest(
         run_id=run_id,
@@ -173,6 +186,8 @@ def run_minimal_smoke(
         hash_bits=hash_bits,
         vocab_size=vocab_size,
         steps=steps,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
         hash_profile_info=hash_profile_info,
     )
 
@@ -263,6 +278,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hash-bits", type=int, default=4, choices=[4, 8, 16])
     parser.add_argument("--vocab-size", type=int, default=DEFAULT_VOCAB_SIZE)
     parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument(
+        "--editable-update-mode",
+        default=EDITABLE_UPDATE_COMMIT_ONCE,
+        choices=[EDITABLE_UPDATE_COMMIT_ONCE, EDITABLE_UPDATE_RESAMPLE_EACH_STEP],
+    )
+    parser.add_argument(
+        "--hash-constraint-schedule",
+        default=HASH_CONSTRAINT_ALWAYS,
+        choices=[
+            HASH_CONSTRAINT_ALWAYS,
+            HASH_CONSTRAINT_FINAL_ONLY,
+            HASH_CONSTRAINT_LATE_HALF,
+        ],
+    )
     parser.add_argument("--hash-profile-dir")
     parser.add_argument("--build-hash-profile", action="store_true")
     parser.add_argument("--hash-map-mode", default=DEFAULT_HASH_MAP_MODE)
@@ -476,6 +505,8 @@ def main(argv: list[str] | None = None) -> int:
             hash_bits=args.hash_bits,
             vocab_size=args.vocab_size,
             steps=args.steps,
+            editable_update_mode=args.editable_update_mode,
+            hash_constraint_schedule=args.hash_constraint_schedule,
             source_layout=_source_layout_from_args(args),
             wire_interleaving=_wire_interleaving_from_args(args),
             channel_config=_channel_config_from_args(args),
@@ -597,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
                 mode=args.micro_eval_mode,
                 hash_bits=args.hash_bits,
                 steps=args.steps,
+                editable_update_mode=args.editable_update_mode,
+                hash_constraint_schedule=args.hash_constraint_schedule,
                 local_files_only=args.llada_local_files_only,
                 allow_cpu=args.allow_cpu_real_llada,
                 hash_profile_dir=args.hash_profile_dir,
@@ -632,6 +665,8 @@ def main(argv: list[str] | None = None) -> int:
                 tokens_per_packet=args.tokens_per_packet,
                 hash_bits=args.hash_bits,
                 steps=args.steps,
+                editable_update_mode=args.editable_update_mode,
+                hash_constraint_schedule=args.hash_constraint_schedule,
                 local_files_only=args.llada_local_files_only,
                 allow_cpu=args.allow_cpu_real_llada,
                 hash_profile_dir=args.hash_profile_dir,
@@ -654,6 +689,8 @@ def main(argv: list[str] | None = None) -> int:
         hash_bits=args.hash_bits,
         vocab_size=args.vocab_size,
         steps=args.steps,
+        editable_update_mode=args.editable_update_mode,
+        hash_constraint_schedule=args.hash_constraint_schedule,
         hash_profile_dir=args.hash_profile_dir,
         build_hash_profile=args.build_hash_profile,
         hash_map_mode=args.hash_map_mode,
@@ -814,10 +851,13 @@ def _run_id(
     tokens_per_packet: int,
     protection_mode: str,
     hash_bits: int,
+    editable_update_mode: str,
+    hash_constraint_schedule: str,
 ) -> str:
     return (
         f"fake-smoke|{protection_mode}|hash{hash_bits}|loss{loss_rate:g}|"
-        f"samples{sample_count}|tpp{tokens_per_packet}|seed{seed}"
+        f"samples{sample_count}|tpp{tokens_per_packet}|seed{seed}|"
+        f"update-{editable_update_mode}|hash-schedule-{hash_constraint_schedule}"
     )
 
 
@@ -832,6 +872,8 @@ def _manifest(
     hash_bits: int,
     vocab_size: int,
     steps: int,
+    editable_update_mode: str,
+    hash_constraint_schedule: str,
     hash_profile_info: dict[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -854,6 +896,8 @@ def _manifest(
             "eos_token_id": DEFAULT_EOS_TOKEN_ID,
             "pad_token_id": DEFAULT_PAD_TOKEN_ID,
             "steps": steps,
+            "editable_update_mode": editable_update_mode,
+            "hash_constraint_schedule": hash_constraint_schedule,
         },
         "hash_profile": hash_profile_info,
         "artifacts": {
@@ -902,6 +946,8 @@ def _result_row(
         "model_proposal_calls": diagnostics.get("model_proposal_calls", ""),
         "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode", ""),
         "proposal_interface_used": diagnostics.get("proposal_interface_used", ""),
+        "editable_update_mode": diagnostics.get("editable_update_mode", ""),
+        "hash_constraint_schedule": diagnostics.get("hash_constraint_schedule", ""),
         **metrics,
     }
 

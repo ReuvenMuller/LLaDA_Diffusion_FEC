@@ -66,6 +66,8 @@ RESULTS_FIELDNAMES = [
     "hash_metadata_token_equivalent_overhead_ratio",
     "total_overhead_ratio",
     "hash_profile_source",
+    "editable_update_mode",
+    "hash_constraint_schedule",
     "decode_latency_sec",
     "decoder_steps",
     "model_forward_calls",

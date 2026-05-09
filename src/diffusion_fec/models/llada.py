@@ -200,6 +200,8 @@ class LLaDAAdapter:
         block_length: int = 32,
         banned_token_ids: Sequence[int] = (),
         fallback_on_empty_hash_bucket: bool = True,
+        editable_update_mode: str = "commit_once",
+        hash_constraint_schedule: str = "always",
     ) -> DiffusionDecodingConfig:
         """Build decoder config from loaded tokenizer/model constants."""
 
@@ -212,6 +214,8 @@ class LLaDAAdapter:
             block_length=block_length,
             banned_token_ids=tuple(banned_token_ids),
             fallback_on_empty_hash_bucket=fallback_on_empty_hash_bucket,
+            editable_update_mode=editable_update_mode,
+            hash_constraint_schedule=hash_constraint_schedule,
         )
 
     def _config_value(self, name: str, default: Any) -> Any:

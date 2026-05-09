@@ -7,6 +7,7 @@ from diffusion_fec.coding.token_hash import TokenHashMap, build_token_hash_map
 from diffusion_fec.decoding.llada_diffusion import (
     DiffusionDecodingConfig,
     decode_masked_diffusion,
+    should_enforce_hash_constraint,
 )
 from diffusion_fec.types import Packet
 
@@ -75,6 +76,41 @@ class ProposalOnlyModel:
         return "|".join(str(token_id) for token_id in token_ids)
 
 
+class StepwiseProposalModel:
+    def __init__(self, choices_by_step: dict[tuple[int, int], int], default_token_id: int = 3):
+        self.choices_by_step = choices_by_step
+        self.default_token_id = default_token_id
+        self.proposal_calls = []
+
+    def propose_token(
+        self,
+        *,
+        position,
+        full_position,
+        candidate_token_ids,
+        input_ids,
+        step,
+    ):
+        self.proposal_calls.append(
+            {
+                "position": position,
+                "full_position": full_position,
+                "candidate_token_ids": tuple(candidate_token_ids),
+                "input_ids": tuple(input_ids),
+                "step": step,
+            }
+        )
+        preferred = self.choices_by_step.get((position, step), self.default_token_id)
+        token_id = preferred if preferred in candidate_token_ids else candidate_token_ids[0]
+        return {"token_id": token_id, "top1_probability": 1.0, "top2_probability": 0.0}
+
+    def forward(self, input_ids, attention_mask=None):
+        raise AssertionError("proposal-only model should not materialize logits")
+
+    def decode(self, token_ids, skip_special_tokens=False):
+        return "|".join(str(token_id) for token_id in token_ids)
+
+
 class TorchLogitsModel:
     def __init__(self, vocab_size: int, preferred_token_id: int):
         self.vocab_size = vocab_size
@@ -100,6 +136,64 @@ def config() -> DiffusionDecodingConfig:
         steps=4,
         block_length=4,
     )
+
+
+def modulo_hash_map(vocab_size: int = 64) -> TokenHashMap:
+    buckets = [[] for _ in range(16)]
+    excluded = {0, 1, 2}
+    token_to_bucket = []
+    for token_id in range(vocab_size):
+        bucket = token_id % 16
+        token_to_bucket.append(bucket)
+        if token_id not in excluded:
+            buckets[bucket].append(token_id)
+    return TokenHashMap(
+        hash_bits=4,
+        vocab_size=vocab_size,
+        token_to_bucket=tuple(token_to_bucket),
+        bucket_to_token_ids=tuple(tuple(bucket) for bucket in buckets),
+        excluded_token_ids=excluded,
+    )
+
+
+def test_decoder_config_defaults_and_schedule_helper() -> None:
+    default_config = config()
+
+    assert default_config.editable_update_mode == "commit_once"
+    assert default_config.hash_constraint_schedule == "always"
+    assert default_config.to_dict()["editable_update_mode"] == "commit_once"
+    assert default_config.to_dict()["hash_constraint_schedule"] == "always"
+    assert [should_enforce_hash_constraint(step, 4, "always") for step in range(4)] == [
+        True,
+        True,
+        True,
+        True,
+    ]
+    assert [should_enforce_hash_constraint(step, 4, "final_only") for step in range(4)] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert [should_enforce_hash_constraint(step, 4, "late_half") for step in range(4)] == [
+        False,
+        False,
+        True,
+        True,
+    ]
+
+
+def test_decoder_config_rejects_invalid_update_mode_and_schedule() -> None:
+    with pytest.raises(ValueError, match="editable_update_mode"):
+        DiffusionDecodingConfig(mask_token_id=0, vocab_size=8, editable_update_mode="bad")
+    with pytest.raises(ValueError, match="hash_constraint_schedule"):
+        DiffusionDecodingConfig(mask_token_id=0, vocab_size=8, hash_constraint_schedule="bad")
+    with pytest.raises(ValueError, match="commit_once decoding only supports"):
+        DiffusionDecodingConfig(
+            mask_token_id=0,
+            vocab_size=8,
+            hash_constraint_schedule="final_only",
+        )
 
 
 def test_known_tokens_never_change_and_model_contract_is_batch_first() -> None:
@@ -198,6 +292,179 @@ def test_hash_guided_position_only_commits_matching_bucket_token() -> None:
     assert result.confidence_stats[0].candidate_count == len(
         token_hash.candidate_token_ids(hash_value)
     )
+
+
+def test_resample_each_step_always_rewrites_with_hash_bucket_candidates() -> None:
+    token_hash = modulo_hash_map()
+    hash_value = 5
+    plan = build_reconstruction_plan(
+        total_tokens=1,
+        received_packets=[],
+        hash_metadata={0: hash_value},
+    )
+    model = StepwiseProposalModel(
+        choices_by_step={
+            (0, 0): 21,
+            (0, 1): 37,
+            (0, 2): 53,
+        }
+    )
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=64,
+            steps=3,
+            block_length=1,
+            editable_update_mode="resample_each_step",
+            hash_constraint_schedule="always",
+        ),
+        token_hash_map=token_hash,
+    )
+
+    assert result.reconstructed_tokens == (53,)
+    assert [call["step"] for call in model.proposal_calls] == [0, 1, 2]
+    assert all(
+        set(call["candidate_token_ids"]) == set(token_hash.candidate_token_ids(hash_value))
+        for call in model.proposal_calls
+    )
+    assert result.diagnostics["hash_enforced_steps"] == (0, 1, 2)
+    assert result.diagnostics["hash_relaxed_steps"] == ()
+    assert result.diagnostics["updated_editable_positions_per_step"] == (1, 1, 1)
+
+
+def test_resample_each_step_final_only_relaxes_then_enforces_hash() -> None:
+    token_hash = modulo_hash_map()
+    hash_value = 5
+    plan = build_reconstruction_plan(
+        total_tokens=1,
+        received_packets=[],
+        hash_metadata={0: hash_value},
+    )
+    model = StepwiseProposalModel(
+        choices_by_step={
+            (0, 0): 4,
+            (0, 1): 6,
+            (0, 2): 21,
+        }
+    )
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=64,
+            steps=3,
+            block_length=1,
+            editable_update_mode="resample_each_step",
+            hash_constraint_schedule="final_only",
+        ),
+        token_hash_map=token_hash,
+    )
+
+    assert result.reconstructed_tokens == (21,)
+    assert model.proposal_calls[0]["candidate_token_ids"] == tuple(range(3, 64))
+    assert model.proposal_calls[1]["candidate_token_ids"] == tuple(range(3, 64))
+    assert set(model.proposal_calls[2]["candidate_token_ids"]) == set(
+        token_hash.candidate_token_ids(hash_value)
+    )
+    assert result.diagnostics["hash_enforced_steps"] == (2,)
+    assert result.diagnostics["hash_relaxed_steps"] == (0, 1)
+
+
+def test_resample_each_step_late_half_enforces_only_late_steps() -> None:
+    token_hash = modulo_hash_map()
+    hash_value = 5
+    plan = build_reconstruction_plan(
+        total_tokens=1,
+        received_packets=[],
+        hash_metadata={0: hash_value},
+    )
+    model = StepwiseProposalModel(
+        choices_by_step={
+            (0, 0): 4,
+            (0, 1): 6,
+            (0, 2): 21,
+            (0, 3): 37,
+        }
+    )
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=64,
+            steps=4,
+            block_length=1,
+            editable_update_mode="resample_each_step",
+            hash_constraint_schedule="late_half",
+        ),
+        token_hash_map=token_hash,
+    )
+
+    assert result.reconstructed_tokens == (37,)
+    assert result.diagnostics["hash_enforced_steps"] == (2, 3)
+    assert result.diagnostics["hash_relaxed_steps"] == (0, 1)
+    assert set(model.proposal_calls[2]["candidate_token_ids"]) == set(
+        token_hash.candidate_token_ids(hash_value)
+    )
+
+
+def test_resample_each_step_preserves_known_tokens_and_excludes_banned_relaxed_tokens() -> None:
+    token_hash = modulo_hash_map()
+    hash_value = 5
+    plan = build_reconstruction_plan(
+        total_tokens=2,
+        received_packets=[
+            Packet(
+                source_id="sample-1",
+                wire_id=0,
+                kind="data",
+                token_ids=[10],
+                token_positions=[0],
+            )
+        ],
+        hash_metadata={1: hash_value},
+    )
+    model = StepwiseProposalModel(
+        choices_by_step={
+            (1, 0): 0,
+            (1, 1): 21,
+        }
+    )
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=64,
+            steps=2,
+            block_length=1,
+            editable_update_mode="resample_each_step",
+            hash_constraint_schedule="final_only",
+        ),
+        token_hash_map=token_hash,
+    )
+
+    assert result.reconstructed_tokens == (10, 21)
+    assert model.proposal_calls[0]["candidate_token_ids"] == tuple(range(3, 64))
+    assert 0 not in model.proposal_calls[0]["candidate_token_ids"]
+    assert 1 not in model.proposal_calls[0]["candidate_token_ids"]
+    assert 2 not in model.proposal_calls[0]["candidate_token_ids"]
+    assert result.confidence_stats[0].was_fixed is True
 
 
 def test_unguided_positions_ban_special_tokens_but_allow_normal_tokens() -> None:

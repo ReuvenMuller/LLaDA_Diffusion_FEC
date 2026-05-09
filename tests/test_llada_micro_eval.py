@@ -54,7 +54,14 @@ class FakeLLaDAAdapter:
     def decode(self, token_ids, skip_special_tokens=False):
         return " ".join(str(token_id) for token_id in token_ids)
 
-    def decoding_config(self, *, steps, block_length):
+    def decoding_config(
+        self,
+        *,
+        steps,
+        block_length,
+        editable_update_mode="commit_once",
+        hash_constraint_schedule="always",
+    ):
         from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
 
         return DiffusionDecodingConfig(
@@ -64,6 +71,8 @@ class FakeLLaDAAdapter:
             vocab_size=self.vocab_size,
             steps=steps,
             block_length=block_length,
+            editable_update_mode=editable_update_mode,
+            hash_constraint_schedule=hash_constraint_schedule,
         )
 
     def forward(self, input_ids, attention_mask=None):
@@ -158,6 +167,8 @@ def test_real_llada_micro_eval_model_hash_writes_artifacts_from_loaded_profile(t
     assert manifest["not_a_research_claim"] is True
     assert manifest["preflight"]["tiny_forward_shape"] == [1, 1, 32]
     assert manifest["hash_profile"]["source"] == "loaded_profile"
+    assert manifest["config"]["editable_update_mode"] == "commit_once"
+    assert manifest["config"]["hash_constraint_schedule"] == "always"
     assert_manifest_has_run_timing(manifest)
     assert rows[0]["strategy"] == "LLaDA_MicroEval_LoadedHashLookback1_NoPrompt"
     assert rows[0]["hash_profile_source"] == "loaded_profile"
@@ -170,9 +181,13 @@ def test_real_llada_micro_eval_model_hash_writes_artifacts_from_loaded_profile(t
     assert rows[0]["model_forward_calls"] == "1"
     assert rows[0]["decoder_steps"] == "1"
     assert rows[0]["decode_latency_sec"]
+    assert rows[0]["editable_update_mode"] == "commit_once"
+    assert rows[0]["hash_constraint_schedule"] == "always"
     assert_row_has_run_timing(rows[0])
     assert events[0]["event_type"] == "real_llada_micro_eval_case"
     assert events[0]["case"]["oracle_hash_metadata"] is False
+    assert events[0]["case"]["decoding_result"]["diagnostics"]["editable_update_mode"] == "commit_once"
+    assert events[0]["case"]["decoding_result"]["diagnostics"]["hash_constraint_schedule"] == "always"
 
 
 def test_real_llada_micro_eval_model_only_does_not_require_profile(tmp_path) -> None:
@@ -197,11 +212,15 @@ def test_real_llada_micro_eval_model_only_does_not_require_profile(tmp_path) -> 
     rows = read_csv(output_dir / "results.csv")
 
     assert manifest["config"]["mode"] == MICRO_EVAL_MODEL_ONLY
+    assert manifest["config"]["editable_update_mode"] == "commit_once"
+    assert manifest["config"]["hash_constraint_schedule"] == "always"
     assert manifest["hash_profile"]["source"] == "not_used"
     assert rows[0]["protection_mode"] == "none"
     assert rows[0]["hash_guided_count"] == "0"
     assert rows[0]["unguided_count"] == "2"
     assert rows[0]["hash_metadata_count"] == "0"
+    assert rows[0]["editable_update_mode"] == "commit_once"
+    assert rows[0]["hash_constraint_schedule"] == "always"
     assert float(rows[0]["total_overhead_ratio"]) == 0.0
 
 

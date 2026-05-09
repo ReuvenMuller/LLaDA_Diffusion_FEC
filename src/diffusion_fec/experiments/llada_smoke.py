@@ -7,6 +7,7 @@ from typing import Any
 
 from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME
+from diffusion_fec.decoding.llada_diffusion import EDITABLE_UPDATE_COMMIT_ONCE, HASH_CONSTRAINT_ALWAYS
 from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
 from diffusion_fec.experiments.smoke import SmokeRecoveryCase, run_smoke_recovery_case
 from diffusion_fec.models.llada import LLADA_1_5_MODEL_ID, LLaDAAdapter
@@ -29,6 +30,8 @@ def run_real_llada_smoke(
     tokens_per_packet: int = 1,
     hash_bits: int = 4,
     steps: int = 2,
+    editable_update_mode: str = EDITABLE_UPDATE_COMMIT_ONCE,
+    hash_constraint_schedule: str = HASH_CONSTRAINT_ALWAYS,
     local_files_only: bool = False,
     allow_cpu: bool = False,
     hash_profile_dir: str | Path | None = None,
@@ -87,7 +90,12 @@ def run_real_llada_smoke(
     )
     forward_shape = _run_tiny_forward(adapter)
     sample = _tiny_token_sample(adapter)
-    config = adapter.decoding_config(steps=steps, block_length=tokens_per_packet)
+    config = adapter.decoding_config(
+        steps=steps,
+        block_length=tokens_per_packet,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
+    )
     case = run_smoke_recovery_case(
         sample=sample,
         model=adapter,
@@ -104,6 +112,8 @@ def run_real_llada_smoke(
         loss_rate=loss_rate,
         seed=seed,
         steps=steps,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
     )
     manifest = _manifest(
         run_id=run_id,
@@ -113,6 +123,8 @@ def run_real_llada_smoke(
         tokens_per_packet=tokens_per_packet,
         hash_bits=hash_bits,
         steps=steps,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
         local_files_only=local_files_only,
         allow_cpu=allow_cpu,
         tokenizer_stage=tokenizer_stage,
@@ -255,9 +267,22 @@ def _tiny_token_sample(adapter: LLaDAAdapter) -> TokenSample:
     raise RealLLaDASmokeUnavailable("Could not build a two-token LLaDA smoke sample.")
 
 
-def _run_id(*, model_id: str, hash_bits: int, loss_rate: float, seed: int, steps: int) -> str:
+def _run_id(
+    *,
+    model_id: str,
+    hash_bits: int,
+    loss_rate: float,
+    seed: int,
+    steps: int,
+    editable_update_mode: str,
+    hash_constraint_schedule: str,
+) -> str:
     model_label = model_id.replace("/", "-")
-    return f"real-llada-smoke|{model_label}|hash{hash_bits}|loss{loss_rate:g}|steps{steps}|seed{seed}"
+    return (
+        f"real-llada-smoke|{model_label}|hash{hash_bits}|loss{loss_rate:g}|"
+        f"steps{steps}|seed{seed}|update-{editable_update_mode}|"
+        f"hash-schedule-{hash_constraint_schedule}"
+    )
 
 
 def _default_hash_profile_name(model_id: str) -> str:
@@ -273,6 +298,8 @@ def _manifest(
     tokens_per_packet: int,
     hash_bits: int,
     steps: int,
+    editable_update_mode: str,
+    hash_constraint_schedule: str,
     local_files_only: bool,
     allow_cpu: bool,
     tokenizer_stage: dict[str, Any],
@@ -301,6 +328,8 @@ def _manifest(
             "oracle_hash_metadata": False,
             "hash_bits": hash_bits,
             "steps": steps,
+            "editable_update_mode": editable_update_mode,
+            "hash_constraint_schedule": hash_constraint_schedule,
             "local_files_only": local_files_only,
             "allow_cpu": allow_cpu,
         },
@@ -325,6 +354,7 @@ def _result_row(
     hash_bits: int,
 ) -> dict[str, Any]:
     plan = case.reconstruction_plan
+    diagnostics = case.decoding_result.diagnostics
     return {
         "run_id": run_id,
         "case_id": case_id,
@@ -344,5 +374,13 @@ def _result_row(
         "unguided_count": plan.unguided_count,
         "received_packet_count": len(case.loss_result.received),
         "dropped_packet_count": len(case.loss_result.dropped),
+        "editable_update_mode": diagnostics.get("editable_update_mode", ""),
+        "hash_constraint_schedule": diagnostics.get("hash_constraint_schedule", ""),
+        "decode_latency_sec": case.decoding_result.decode_latency_sec,
+        "decoder_steps": case.decoding_result.steps,
+        "model_forward_calls": diagnostics.get("model_forward_calls", ""),
+        "model_proposal_calls": diagnostics.get("model_proposal_calls", ""),
+        "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode", ""),
+        "proposal_interface_used": diagnostics.get("proposal_interface_used", ""),
         **case.metrics.to_dict(),
     }

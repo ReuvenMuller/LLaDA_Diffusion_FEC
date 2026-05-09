@@ -82,6 +82,8 @@ def test_results_csv_includes_metrics_and_run_metadata(tmp_path) -> None:
     assert int(first["model_proposal_calls"]) > 0
     assert first["decoder_proposal_mode"] == "model_propose_token"
     assert first["proposal_interface_used"] == "True"
+    assert first["editable_update_mode"] == "commit_once"
+    assert first["hash_constraint_schedule"] == "always"
     assert_row_has_run_timing(first)
 
 
@@ -103,6 +105,8 @@ def test_events_jsonl_contains_detailed_case_data_and_normalized_latency(tmp_pat
     assert "decoding_result" in case
     assert "metrics" in case
     assert case["decoding_result"]["decode_latency_sec"] == 0.0
+    assert case["decoding_result"]["diagnostics"]["editable_update_mode"] == "commit_once"
+    assert case["decoding_result"]["diagnostics"]["hash_constraint_schedule"] == "always"
 
 
 def test_runner_output_is_deterministic_for_same_seed(tmp_path) -> None:

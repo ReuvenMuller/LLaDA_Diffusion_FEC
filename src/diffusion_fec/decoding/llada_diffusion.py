@@ -34,6 +34,27 @@ from diffusion_fec.types import (
 )
 
 
+EDITABLE_UPDATE_COMMIT_ONCE = "commit_once"
+EDITABLE_UPDATE_RESAMPLE_EACH_STEP = "resample_each_step"
+VALID_EDITABLE_UPDATE_MODES = frozenset(
+    {
+        EDITABLE_UPDATE_COMMIT_ONCE,
+        EDITABLE_UPDATE_RESAMPLE_EACH_STEP,
+    }
+)
+
+HASH_CONSTRAINT_ALWAYS = "always"
+HASH_CONSTRAINT_FINAL_ONLY = "final_only"
+HASH_CONSTRAINT_LATE_HALF = "late_half"
+VALID_HASH_CONSTRAINT_SCHEDULES = frozenset(
+    {
+        HASH_CONSTRAINT_ALWAYS,
+        HASH_CONSTRAINT_FINAL_ONLY,
+        HASH_CONSTRAINT_LATE_HALF,
+    }
+)
+
+
 @dataclass(frozen=True)
 class DiffusionDecodingConfig:
     """Configuration for deterministic constrained masked diffusion."""
@@ -46,6 +67,8 @@ class DiffusionDecodingConfig:
     pad_token_id: int | None = None
     banned_token_ids: tuple[int, ...] = field(default_factory=tuple)
     fallback_on_empty_hash_bucket: bool = True
+    editable_update_mode: str = EDITABLE_UPDATE_COMMIT_ONCE
+    hash_constraint_schedule: str = HASH_CONSTRAINT_ALWAYS
 
     def __post_init__(self) -> None:
         if not isinstance(self.vocab_size, int):
@@ -71,6 +94,20 @@ class DiffusionDecodingConfig:
                 self._validate_token_id(token_id, field_name)
         for token_id in self.banned_token_ids:
             self._validate_token_id(token_id, "banned_token_ids")
+        if self.editable_update_mode not in VALID_EDITABLE_UPDATE_MODES:
+            modes = ", ".join(sorted(VALID_EDITABLE_UPDATE_MODES))
+            raise ValueError(f"editable_update_mode must be one of: {modes}")
+        if self.hash_constraint_schedule not in VALID_HASH_CONSTRAINT_SCHEDULES:
+            schedules = ", ".join(sorted(VALID_HASH_CONSTRAINT_SCHEDULES))
+            raise ValueError(f"hash_constraint_schedule must be one of: {schedules}")
+        if (
+            self.editable_update_mode == EDITABLE_UPDATE_COMMIT_ONCE
+            and self.hash_constraint_schedule != HASH_CONSTRAINT_ALWAYS
+        ):
+            raise ValueError(
+                "commit_once decoding only supports hash_constraint_schedule='always'; "
+                "use editable_update_mode='resample_each_step' for relaxed schedules"
+            )
 
     @property
     def special_token_ids(self) -> frozenset[int]:
@@ -92,6 +129,8 @@ class DiffusionDecodingConfig:
             "pad_token_id": self.pad_token_id,
             "banned_token_ids": list(self.banned_token_ids),
             "fallback_on_empty_hash_bucket": self.fallback_on_empty_hash_bucket,
+            "editable_update_mode": self.editable_update_mode,
+            "hash_constraint_schedule": self.hash_constraint_schedule,
         }
 
     def _validate_token_id(self, token_id: int, field_name: str) -> None:
@@ -117,6 +156,27 @@ class _ProposalChoice:
     token_id: int
     top1_probability: float = 1.0
     top2_probability: float = 0.0
+
+
+def should_enforce_hash_constraint(step: int, total_steps: int, schedule: str) -> bool:
+    """Return whether hash-guided positions should be bucket-constrained."""
+
+    if not isinstance(step, int):
+        raise TypeError("step must be an int")
+    if not isinstance(total_steps, int):
+        raise TypeError("total_steps must be an int")
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+    if step < 0 or step >= total_steps:
+        raise ValueError("step must be in range [0, total_steps)")
+    if schedule == HASH_CONSTRAINT_ALWAYS:
+        return True
+    if schedule == HASH_CONSTRAINT_FINAL_ONLY:
+        return step == total_steps - 1
+    if schedule == HASH_CONSTRAINT_LATE_HALF:
+        return step >= total_steps // 2
+    schedules = ", ".join(sorted(VALID_HASH_CONSTRAINT_SCHEDULES))
+    raise ValueError(f"hash_constraint_schedule must be one of: {schedules}")
 
 
 def decode_masked_diffusion(
@@ -186,6 +246,11 @@ def decode_masked_diffusion(
                 ),
                 "proposal_interface_available": proposal_interface_available,
                 "proposal_interface_used": False,
+                "editable_update_mode": config.editable_update_mode,
+                "hash_constraint_schedule": config.hash_constraint_schedule,
+                "hash_enforced_steps": [],
+                "hash_relaxed_steps": [],
+                "updated_editable_positions_per_step": [],
                 "hash_bucket_empty_positions": [],
                 "fallback_positions": [],
                 "fallback_reasons": {},
@@ -195,97 +260,198 @@ def decode_masked_diffusion(
         )
 
     forward_calls = 0
-    for step in range(config.steps):
+    hash_enforced_steps: list[int] = []
+    hash_relaxed_steps: list[int] = []
+    updated_editable_positions_per_step: list[int] = []
+
+    if config.editable_update_mode == EDITABLE_UPDATE_COMMIT_ONCE:
+        for step in range(config.steps):
+            editable_target_positions = _still_masked_target_positions(
+                x,
+                plan,
+                prompt_length,
+                config.mask_token_id,
+            )
+            if not editable_target_positions:
+                break
+
+            hash_enforced_steps.append(step)
+            remaining_steps = config.steps - step
+            transfer_count = max(1, ceil(len(editable_target_positions) / remaining_steps))
+
+            if proposal_interface_available:
+                proposals = []
+                for target_position in editable_target_positions:
+                    proposals.append(
+                        _proposal_from_model_hook(
+                            propose_token=propose_token,
+                            entry=plan.entries[target_position],
+                            full_position=prompt_length + target_position,
+                            input_ids=tuple(x),
+                            step=step,
+                            config=config,
+                            token_hash_map=token_hash_map,
+                            non_banned_token_ids=non_banned_token_ids,
+                            enforce_hash_constraint=True,
+                        )
+                    )
+                    proposal_calls += 1
+            else:
+                logits = _extract_logits(
+                    model.forward([list(x)], attention_mask=[list(attention_mask)]),
+                    sequence_length=len(x),
+                    vocab_size=config.vocab_size,
+                )
+                forward_calls += 1
+                proposals = [
+                    _proposal_for_position(
+                        entry=plan.entries[target_position],
+                        full_position=prompt_length + target_position,
+                        position_logits=logits[prompt_length + target_position],
+                        config=config,
+                        token_hash_map=token_hash_map,
+                        non_banned_token_ids=non_banned_token_ids,
+                        enforce_hash_constraint=True,
+                    )
+                    for target_position in editable_target_positions
+                ]
+            proposals.sort(
+                key=lambda proposal: (
+                    -proposal.top1_probability,
+                    proposal.target_position,
+                )
+            )
+            committed = proposals[:transfer_count]
+
+            committed_stats: list[ConfidenceStat] = []
+            step_fallback_positions: list[int] = []
+            for proposal in committed:
+                x[proposal.full_position] = proposal.token_id
+                entry = plan.entries[proposal.target_position]
+                stat = editable_confidence_stat(
+                    entry,
+                    selected_token_id=proposal.token_id,
+                    top1_probability=proposal.top1_probability,
+                    top2_probability=proposal.top2_probability,
+                    candidate_count=proposal.candidate_count,
+                    commit_step=step,
+                )
+                stats_by_position[proposal.target_position] = stat
+                committed_stats.append(stat)
+                if proposal.used_fallback:
+                    fallback_positions.add(proposal.target_position)
+                    step_fallback_positions.append(proposal.target_position)
+                    fallback_reasons[proposal.target_position] = "hash_bucket_empty_after_bans"
+
+            updated_editable_positions_per_step.append(len(committed))
+            step_restored = _restore_fixed_tokens(x, fixed_token_ids)
+            restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
+            still_masked_count = len(
+                _still_masked_target_positions(x, plan, prompt_length, config.mask_token_id)
+            )
+            step_summaries.append(
+                step_summary(
+                    step=step,
+                    still_masked_count=still_masked_count,
+                    committed_stats=committed_stats,
+                    fallback_positions=step_fallback_positions,
+                    restored_fixed_positions=[
+                        position - prompt_length for position in step_restored if position >= prompt_length
+                    ],
+                )
+            )
+    else:
         editable_target_positions = _still_masked_target_positions(
             x,
             plan,
             prompt_length,
             config.mask_token_id,
         )
-        if not editable_target_positions:
-            break
+        for step in range(config.steps):
+            enforce_hash = should_enforce_hash_constraint(
+                step,
+                config.steps,
+                config.hash_constraint_schedule,
+            )
+            if enforce_hash:
+                hash_enforced_steps.append(step)
+            else:
+                hash_relaxed_steps.append(step)
 
-        remaining_steps = config.steps - step
-        transfer_count = max(1, ceil(len(editable_target_positions) / remaining_steps))
-
-        if proposal_interface_available:
-            proposals = []
-            for target_position in editable_target_positions:
-                proposals.append(
-                    _proposal_from_model_hook(
-                        propose_token=propose_token,
+            if proposal_interface_available:
+                proposals = []
+                for target_position in editable_target_positions:
+                    proposals.append(
+                        _proposal_from_model_hook(
+                            propose_token=propose_token,
+                            entry=plan.entries[target_position],
+                            full_position=prompt_length + target_position,
+                            input_ids=tuple(x),
+                            step=step,
+                            config=config,
+                            token_hash_map=token_hash_map,
+                            non_banned_token_ids=non_banned_token_ids,
+                            enforce_hash_constraint=enforce_hash,
+                        )
+                    )
+                    proposal_calls += 1
+            else:
+                logits = _extract_logits(
+                    model.forward([list(x)], attention_mask=[list(attention_mask)]),
+                    sequence_length=len(x),
+                    vocab_size=config.vocab_size,
+                )
+                forward_calls += 1
+                proposals = [
+                    _proposal_for_position(
                         entry=plan.entries[target_position],
                         full_position=prompt_length + target_position,
-                        input_ids=tuple(x),
-                        step=step,
+                        position_logits=logits[prompt_length + target_position],
                         config=config,
                         token_hash_map=token_hash_map,
                         non_banned_token_ids=non_banned_token_ids,
+                        enforce_hash_constraint=enforce_hash,
                     )
-                )
-                proposal_calls += 1
-        else:
-            logits = _extract_logits(
-                model.forward([list(x)], attention_mask=[list(attention_mask)]),
-                sequence_length=len(x),
-                vocab_size=config.vocab_size,
-            )
-            forward_calls += 1
-            proposals = [
-                _proposal_for_position(
-                    entry=plan.entries[target_position],
-                    full_position=prompt_length + target_position,
-                    position_logits=logits[prompt_length + target_position],
-                    config=config,
-                    token_hash_map=token_hash_map,
-                    non_banned_token_ids=non_banned_token_ids,
-                )
-                for target_position in editable_target_positions
-            ]
-        proposals.sort(
-            key=lambda proposal: (
-                -proposal.top1_probability,
-                proposal.target_position,
-            )
-        )
-        committed = proposals[:transfer_count]
+                    for target_position in editable_target_positions
+                ]
 
-        committed_stats: list[ConfidenceStat] = []
-        step_fallback_positions: list[int] = []
-        for proposal in committed:
-            x[proposal.full_position] = proposal.token_id
-            entry = plan.entries[proposal.target_position]
-            stat = editable_confidence_stat(
-                entry,
-                selected_token_id=proposal.token_id,
-                top1_probability=proposal.top1_probability,
-                top2_probability=proposal.top2_probability,
-                candidate_count=proposal.candidate_count,
-                commit_step=step,
-            )
-            stats_by_position[proposal.target_position] = stat
-            committed_stats.append(stat)
-            if proposal.used_fallback:
-                fallback_positions.add(proposal.target_position)
-                step_fallback_positions.append(proposal.target_position)
-                fallback_reasons[proposal.target_position] = "hash_bucket_empty_after_bans"
+            committed_stats = []
+            step_fallback_positions = []
+            for proposal in proposals:
+                x[proposal.full_position] = proposal.token_id
+                entry = plan.entries[proposal.target_position]
+                stat = editable_confidence_stat(
+                    entry,
+                    selected_token_id=proposal.token_id,
+                    top1_probability=proposal.top1_probability,
+                    top2_probability=proposal.top2_probability,
+                    candidate_count=proposal.candidate_count,
+                    commit_step=step,
+                )
+                stats_by_position[proposal.target_position] = stat
+                committed_stats.append(stat)
+                if proposal.used_fallback:
+                    fallback_positions.add(proposal.target_position)
+                    step_fallback_positions.append(proposal.target_position)
+                    fallback_reasons[proposal.target_position] = "hash_bucket_empty_after_bans"
 
-        step_restored = _restore_fixed_tokens(x, fixed_token_ids)
-        restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
-        still_masked_count = len(
-            _still_masked_target_positions(x, plan, prompt_length, config.mask_token_id)
-        )
-        step_summaries.append(
-            step_summary(
-                step=step,
-                still_masked_count=still_masked_count,
-                committed_stats=committed_stats,
-                fallback_positions=step_fallback_positions,
-                restored_fixed_positions=[
-                    position - prompt_length for position in step_restored if position >= prompt_length
-                ],
+            updated_editable_positions_per_step.append(len(proposals))
+            step_restored = _restore_fixed_tokens(x, fixed_token_ids)
+            restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
+            still_masked_count = len(
+                _still_masked_target_positions(x, plan, prompt_length, config.mask_token_id)
             )
-        )
+            step_summaries.append(
+                step_summary(
+                    step=step,
+                    still_masked_count=still_masked_count,
+                    committed_stats=committed_stats,
+                    fallback_positions=step_fallback_positions,
+                    restored_fixed_positions=[
+                        position - prompt_length for position in step_restored if position >= prompt_length
+                    ],
+                )
+            )
 
     remaining_masked = _still_masked_target_positions(
         x,
@@ -295,6 +461,23 @@ def decode_masked_diffusion(
     )
     if remaining_masked:
         raise RuntimeError(f"decoder left masked target positions unfilled: {remaining_masked}")
+    _validate_fixed_tokens_preserved(x, fixed_token_ids)
+    if (
+        config.editable_update_mode == EDITABLE_UPDATE_RESAMPLE_EACH_STEP
+        and should_enforce_hash_constraint(
+            config.steps - 1,
+            config.steps,
+            config.hash_constraint_schedule,
+        )
+    ):
+        _validate_final_hash_constraints(
+            x=x,
+            plan=plan,
+            prompt_length=prompt_length,
+            config=config,
+            token_hash_map=token_hash_map,
+            fallback_positions=fallback_positions,
+        )
 
     reconstructed_tokens = tuple(x[prompt_length:])
     ordered_stats = tuple(stats_by_position[position] for position in range(plan.total_tokens))
@@ -318,6 +501,11 @@ def decode_masked_diffusion(
             ),
             "proposal_interface_available": proposal_interface_available,
             "proposal_interface_used": proposal_calls > 0,
+            "editable_update_mode": config.editable_update_mode,
+            "hash_constraint_schedule": config.hash_constraint_schedule,
+            "hash_enforced_steps": tuple(hash_enforced_steps),
+            "hash_relaxed_steps": tuple(hash_relaxed_steps),
+            "updated_editable_positions_per_step": tuple(updated_editable_positions_per_step),
             "hash_bucket_empty_positions": sorted(fallback_positions),
             "fallback_positions": sorted(fallback_positions),
             "fallback_reasons": dict(sorted(fallback_reasons.items())),
@@ -392,6 +580,43 @@ def _extract_logits(
     return batch_logits
 
 
+def _validate_fixed_tokens_preserved(x: Sequence[int], fixed_token_ids: dict[int, int]) -> None:
+    changed = [
+        position
+        for position, token_id in fixed_token_ids.items()
+        if x[position] != token_id
+    ]
+    if changed:
+        raise RuntimeError(f"decoder changed fixed token positions: {changed}")
+
+
+def _validate_final_hash_constraints(
+    *,
+    x: Sequence[int],
+    plan: ReconstructionPlan,
+    prompt_length: int,
+    config: DiffusionDecodingConfig,
+    token_hash_map: TokenHashMap | None,
+    fallback_positions: set[int],
+) -> None:
+    if plan.hash_guided_count and token_hash_map is None:
+        raise ValueError("token_hash_map is required for hash-guided reconstruction plans")
+    if token_hash_map is None:
+        return
+    violations = []
+    for entry in plan.entries:
+        if entry.state != STATE_MISSING or entry.position in fallback_positions:
+            continue
+        token_id = x[prompt_length + entry.position]
+        if token_id in config.special_token_ids:
+            violations.append(entry.position)
+            continue
+        if entry.hash_value is None or token_hash_map.bucket_for_token(token_id) != entry.hash_value:
+            violations.append(entry.position)
+    if violations:
+        raise RuntimeError(f"decoder produced non-hash-legal final positions: {violations}")
+
+
 def _proposal_for_position(
     *,
     entry: ReconstructionEntry,
@@ -400,12 +625,14 @@ def _proposal_for_position(
     config: DiffusionDecodingConfig,
     token_hash_map: TokenHashMap | None,
     non_banned_token_ids: tuple[int, ...],
+    enforce_hash_constraint: bool,
 ) -> _Proposal:
     candidates, used_fallback = _candidate_token_ids(
         entry=entry,
         config=config,
         token_hash_map=token_hash_map,
         non_banned_token_ids=non_banned_token_ids,
+        enforce_hash_constraint=enforce_hash_constraint,
     )
     token_id, top1_probability, top2_probability = _select_argmax_with_confidence(
         position_logits,
@@ -432,12 +659,14 @@ def _proposal_from_model_hook(
     config: DiffusionDecodingConfig,
     token_hash_map: TokenHashMap | None,
     non_banned_token_ids: tuple[int, ...],
+    enforce_hash_constraint: bool,
 ) -> _Proposal:
     candidates, used_fallback = _candidate_token_ids(
         entry=entry,
         config=config,
         token_hash_map=token_hash_map,
         non_banned_token_ids=non_banned_token_ids,
+        enforce_hash_constraint=enforce_hash_constraint,
     )
     choice = _normalize_proposal_choice(
         propose_token(
@@ -489,8 +718,11 @@ def _candidate_token_ids(
     config: DiffusionDecodingConfig,
     token_hash_map: TokenHashMap | None,
     non_banned_token_ids: tuple[int, ...],
+    enforce_hash_constraint: bool,
 ) -> tuple[tuple[int, ...], bool]:
     if entry.state != STATE_MISSING:
+        return non_banned_token_ids, False
+    if not enforce_hash_constraint:
         return non_banned_token_ids, False
     if token_hash_map is None:
         raise ValueError("token_hash_map is required for hash-guided entries")

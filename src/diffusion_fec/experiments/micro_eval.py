@@ -24,7 +24,11 @@ from diffusion_fec.channels.packet_loss import (
 from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME, LOOKBACK_HASH_METADATA_KEY
-from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
+from diffusion_fec.decoding.llada_diffusion import (
+    EDITABLE_UPDATE_COMMIT_ONCE,
+    HASH_CONSTRAINT_ALWAYS,
+    DiffusionDecodingConfig,
+)
 from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
 from diffusion_fec.experiments.smoke import SmokeRecoveryCase, run_smoke_recovery_case
 from diffusion_fec.types import TokenSample
@@ -138,6 +142,8 @@ def run_synthetic_micro_eval(
     hash_bits: int = DEFAULT_MICRO_EVAL_HASH_BITS,
     vocab_size: int = DEFAULT_MICRO_EVAL_VOCAB_SIZE,
     steps: int = DEFAULT_MICRO_EVAL_STEPS,
+    editable_update_mode: str = EDITABLE_UPDATE_COMMIT_ONCE,
+    hash_constraint_schedule: str = HASH_CONSTRAINT_ALWAYS,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
     channel_config: PacketLossChannelConfig | None = None,
@@ -203,6 +209,8 @@ def run_synthetic_micro_eval(
         vocab_size=vocab_size,
         steps=steps,
         block_length=max(tokens_per_packet, 1),
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
     )
     run_id = _run_id(
         sample_lengths=sample_lengths,
@@ -213,6 +221,8 @@ def run_synthetic_micro_eval(
         hash_bits=hash_bits,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
     )
     manifest = _manifest(
         run_id=run_id,
@@ -225,6 +235,8 @@ def run_synthetic_micro_eval(
         hash_bits=hash_bits,
         vocab_size=vocab_size,
         steps=steps,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -400,6 +412,8 @@ def _run_id(
     hash_bits: int,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
+    editable_update_mode: str,
+    hash_constraint_schedule: str,
 ) -> str:
     lengths = "-".join(str(length) for length in sample_lengths)
     source_chunk = source_layout.chunk_size if source_layout.chunk_size is not None else "default"
@@ -407,7 +421,8 @@ def _run_id(
         f"fake-micro-eval|{mode}|hash{hash_bits}|loss{loss_rate:g}|"
         f"lengths{lengths}|tpp{tokens_per_packet}|seed{seed}|"
         f"source-{source_layout.mode}-chunk{source_chunk}|"
-        f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}"
+        f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}|"
+        f"update-{editable_update_mode}|hash-schedule-{hash_constraint_schedule}"
     )
 
 
@@ -429,6 +444,8 @@ def _manifest(
     hash_bits: int,
     vocab_size: int,
     steps: int,
+    editable_update_mode: str,
+    hash_constraint_schedule: str,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
@@ -468,6 +485,8 @@ def _manifest(
             "eos_token_id": DEFAULT_EOS_TOKEN_ID,
             "pad_token_id": DEFAULT_PAD_TOKEN_ID,
             "steps": steps,
+            "editable_update_mode": editable_update_mode,
+            "hash_constraint_schedule": hash_constraint_schedule,
             "source_layout": source_layout.to_dict(),
             "wire_interleaving": wire_interleaving.to_dict(),
             "channel": channel_config.to_dict(),
@@ -565,6 +584,8 @@ def _result_row(
         "model_proposal_calls": diagnostics.get("model_proposal_calls", ""),
         "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode", ""),
         "proposal_interface_used": diagnostics.get("proposal_interface_used", ""),
+        "editable_update_mode": diagnostics.get("editable_update_mode", ""),
+        "hash_constraint_schedule": diagnostics.get("hash_constraint_schedule", ""),
         **metrics,
         "sample_index": sample_index,
     }

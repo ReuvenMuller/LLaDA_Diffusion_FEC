@@ -205,6 +205,40 @@ while model-only and hash4 slipped slightly. All rows still preserved known
 tokens and left zero mask tokens. This is useful iteration-count validation, not
 a final research result.
 
+### Decoder Refinement Ablation
+
+The validated decoder default is `commit_once + always`: erased positions are
+filled over multiple steps, and once a position is committed it is no longer
+editable. This remains the default and is the baseline for previous validation
+runs.
+
+An experimental true refinement mode is available with:
+
+```bash
+--editable-update-mode resample_each_step
+```
+
+In this mode, all erased positions remain editable across all denoising steps
+and are rewritten every step. Known/received tokens and prompt tokens remain
+fixed every step. Hash-guided positions can use one of three schedules:
+
+```bash
+--hash-constraint-schedule always
+--hash-constraint-schedule final_only
+--hash-constraint-schedule late_half
+```
+
+`always` applies token-hash buckets every step. `final_only` relaxes hash
+constraints until the final step. `late_half` relaxes the first half and
+enforces hash buckets in the second half. Relaxed steps still exclude mask,
+padding, EOS, and explicitly banned tokens. Commit-once decoding intentionally
+supports only `hash_constraint_schedule=always` to avoid misleading runs where
+positions commit before a final hash constraint can apply.
+
+Result rows and manifests include `editable_update_mode` and
+`hash_constraint_schedule`, and analysis groups by those fields so ablation rows
+do not collapse together.
+
 ## Analysis Artifacts
 
 Build analysis artifacts for any directory containing run outputs:

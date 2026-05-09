@@ -27,6 +27,10 @@ from diffusion_fec.coding.hash_profiles import (
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
 from diffusion_fec.coding.protection import LOOKBACK_1_SCHEME, LOOKBACK_HASH_METADATA_KEY
 from diffusion_fec.data.tokenized_samples import load_tokenized_sample_artifact
+from diffusion_fec.decoding.llada_diffusion import (
+    EDITABLE_UPDATE_COMMIT_ONCE,
+    HASH_CONSTRAINT_ALWAYS,
+)
 from diffusion_fec.experiments.dataset_samples import load_dataset_token_samples
 from diffusion_fec.experiments.llada_smoke import (
     RealLLaDASmokeUnavailable,
@@ -67,6 +71,8 @@ def run_real_llada_micro_eval(
     mode: str = MICRO_EVAL_MODEL_HASH,
     hash_bits: int = 4,
     steps: int = DEFAULT_REAL_LLADA_MICRO_EVAL_STEPS,
+    editable_update_mode: str = EDITABLE_UPDATE_COMMIT_ONCE,
+    hash_constraint_schedule: str = HASH_CONSTRAINT_ALWAYS,
     local_files_only: bool = False,
     allow_cpu: bool = False,
     hash_profile_dir: str | Path | None = None,
@@ -166,7 +172,12 @@ def run_real_llada_micro_eval(
         torch_module=torch,
     )
     forward_shape = _safe_run_tiny_forward(adapter)
-    config = adapter.decoding_config(steps=steps, block_length=tokens_per_packet)
+    config = adapter.decoding_config(
+        steps=steps,
+        block_length=tokens_per_packet,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
+    )
     run_id = _run_id(
         model_id=model_id,
         sample_lengths=sample_lengths,
@@ -178,6 +189,8 @@ def run_real_llada_micro_eval(
         steps=steps,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
     )
     manifest = _manifest(
         run_id=run_id,
@@ -190,6 +203,8 @@ def run_real_llada_micro_eval(
         seed=seed,
         tokens_per_packet=tokens_per_packet,
         steps=steps,
+        editable_update_mode=editable_update_mode,
+        hash_constraint_schedule=hash_constraint_schedule,
         local_files_only=local_files_only,
         allow_cpu=allow_cpu,
         tokenizer_stage=tokenizer_stage,
@@ -538,6 +553,8 @@ def _run_id(
     steps: int,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
+    editable_update_mode: str,
+    hash_constraint_schedule: str,
 ) -> str:
     model_label = model_id.replace("/", "-")
     lengths = "-".join(str(length) for length in sample_lengths)
@@ -546,7 +563,8 @@ def _run_id(
         f"real-llada-micro-eval|{model_label}|{mode}|hash{hash_bits}|"
         f"loss{loss_rate:g}|lengths{lengths}|tpp{tokens_per_packet}|steps{steps}|"
         f"seed{seed}|source-{source_layout.mode}-chunk{source_chunk}|"
-        f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}"
+        f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}|"
+        f"update-{editable_update_mode}|hash-schedule-{hash_constraint_schedule}"
     )
 
 
@@ -568,6 +586,8 @@ def _manifest(
     seed: int,
     tokens_per_packet: int,
     steps: int,
+    editable_update_mode: str,
+    hash_constraint_schedule: str,
     local_files_only: bool,
     allow_cpu: bool,
     tokenizer_stage: dict[str, Any],
@@ -604,6 +624,8 @@ def _manifest(
             "oracle_hash_metadata": False,
             "hash_bits": hash_bits,
             "steps": steps,
+            "editable_update_mode": editable_update_mode,
+            "hash_constraint_schedule": hash_constraint_schedule,
             "local_files_only": local_files_only,
             "allow_cpu": allow_cpu,
             "source_layout": source_layout.to_dict(),
@@ -707,6 +729,8 @@ def _result_row(
         ],
         "total_overhead_ratio": overhead["hash_metadata_token_equivalent_overhead_ratio"],
         "hash_profile_source": hash_profile_info.get("source"),
+        "editable_update_mode": diagnostics.get("editable_update_mode"),
+        "hash_constraint_schedule": diagnostics.get("hash_constraint_schedule"),
         "decode_latency_sec": case.decoding_result.decode_latency_sec,
         "decoder_steps": case.decoding_result.steps,
         "model_forward_calls": diagnostics.get("model_forward_calls"),

@@ -62,6 +62,8 @@ def test_model_only_micro_eval_writes_unguided_artifacts(tmp_path) -> None:
     assert manifest["not_a_research_claim"] is True
     assert manifest["config"]["mode"] == MICRO_EVAL_MODEL_ONLY
     assert manifest["config"]["protection_mode"] == "none"
+    assert manifest["config"]["editable_update_mode"] == "commit_once"
+    assert manifest["config"]["hash_constraint_schedule"] == "always"
     assert manifest["hash_profile"]["source"] == "not_used"
     assert_manifest_has_run_timing(manifest)
     assert rows[0]["protection_mode"] == "none"
@@ -69,10 +71,14 @@ def test_model_only_micro_eval_writes_unguided_artifacts(tmp_path) -> None:
     assert rows[0]["unguided_count"] == "8"
     assert rows[0]["hash_metadata_count"] == "0"
     assert rows[0]["hash_metadata_bit_count"] == "0"
+    assert rows[0]["editable_update_mode"] == "commit_once"
+    assert rows[0]["hash_constraint_schedule"] == "always"
     assert float(rows[0]["total_overhead_ratio"]) == 0.0
     assert_row_has_run_timing(rows[0])
     assert events[0]["case"]["hash_metadata"] == {}
     assert events[0]["case"]["oracle_hash_metadata"] is False
+    assert events[0]["case"]["decoding_result"]["diagnostics"]["editable_update_mode"] == "commit_once"
+    assert events[0]["case"]["decoding_result"]["diagnostics"]["hash_constraint_schedule"] == "always"
 
 
 def test_model_hash_micro_eval_uses_only_transmitted_lookback_metadata(tmp_path) -> None:
@@ -95,15 +101,46 @@ def test_model_hash_micro_eval_uses_only_transmitted_lookback_metadata(tmp_path)
     assert manifest["config"]["mode"] == MICRO_EVAL_MODEL_HASH
     assert manifest["config"]["protection_mode"] == "lookback_1"
     assert manifest["config"]["oracle_hash_metadata"] is False
+    assert manifest["config"]["editable_update_mode"] == "commit_once"
+    assert manifest["config"]["hash_constraint_schedule"] == "always"
     assert rows[0]["known_count"] == "1"
     assert rows[0]["hash_guided_count"] == "1"
     assert rows[0]["unguided_count"] == "0"
     assert rows[0]["hash_metadata_count"] == "1"
     assert rows[0]["hash_metadata_bit_count"] == "4"
+    assert rows[0]["editable_update_mode"] == "commit_once"
+    assert rows[0]["hash_constraint_schedule"] == "always"
     assert float(rows[0]["hash_metadata_token_equivalent_overhead_ratio"]) > 0.0
     assert rows[0]["total_overhead_ratio"] == rows[0]["hash_metadata_token_equivalent_overhead_ratio"]
     assert events[0]["case"]["oracle_hash_metadata"] is False
     assert list(events[0]["case"]["hash_metadata"]) == ["0"]
+
+
+def test_micro_eval_artifacts_record_resample_mode_and_hash_schedule(tmp_path) -> None:
+    output_dir = tmp_path / "resample"
+
+    run_synthetic_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(4,),
+        loss_rate=1.0,
+        seed=0,
+        tokens_per_packet=2,
+        mode=MICRO_EVAL_MODEL_ONLY,
+        editable_update_mode="resample_each_step",
+        hash_constraint_schedule="final_only",
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    rows = read_csv(output_dir / "results.csv")
+    events = read_jsonl(output_dir / "events.jsonl")
+
+    assert manifest["config"]["editable_update_mode"] == "resample_each_step"
+    assert manifest["config"]["hash_constraint_schedule"] == "final_only"
+    assert rows[0]["editable_update_mode"] == "resample_each_step"
+    assert rows[0]["hash_constraint_schedule"] == "final_only"
+    diagnostics = events[0]["case"]["decoding_result"]["diagnostics"]
+    assert diagnostics["editable_update_mode"] == "resample_each_step"
+    assert diagnostics["hash_constraint_schedule"] == "final_only"
 
 
 def test_model_hash_micro_eval_counts_full_transmitted_lookback_overhead(tmp_path) -> None:

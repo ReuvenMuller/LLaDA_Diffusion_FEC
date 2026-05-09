@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_GROUP_BY = ("strategy", "protection_mode", "channel_mode")
+DEFAULT_GROUP_BY = (
+    "strategy",
+    "protection_mode",
+    "channel_mode",
+    "editable_update_mode",
+    "hash_constraint_schedule",
+)
 NUMERIC_MEAN_FIELDS = (
     "token_edit_distance",
     "normalized_token_edit_distance",

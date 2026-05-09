@@ -326,6 +326,15 @@ bottleneck observed during the first 10-sample dataset-backed validation run.
 The older Python candidate scan remains as the fallback for simple fake logits
 and non-tensor test doubles.
 
+The decoder also has an experimental refinement ablation. The default
+`editable_update_mode="commit_once"` preserves the validated behavior: positions
+are filled once and then fixed. The experimental
+`editable_update_mode="resample_each_step"` rewrites every erased position at
+each denoising step. Its `hash_constraint_schedule` can be `always`,
+`final_only`, or `late_half`; relaxed hash steps still exclude banned/special
+tokens. Commit-once runs intentionally use `hash_constraint_schedule="always"`
+only.
+
 Result CSVs can be aggregated with:
 
 ```python
