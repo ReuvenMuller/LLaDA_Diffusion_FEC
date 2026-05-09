@@ -272,6 +272,51 @@ repetitive or locally awkward text, while commit-once tended to preserve a more
 stable reconstruction. This remains decoder-design validation, not a final
 research result.
 
+### Completed Interleaving Validation
+
+The first real LLaDA interleaving ablation completed on 2026-05-09:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-interleaving-20260509_115544
+```
+
+It reused the frozen 10-sample LLaDA-tokenized WikiText artifact, hash profiles,
+IID `loss_rate=0.5`, `tokens_per_packet=4`, `seed=0`, `steps=8`, and the best
+validated decoder path: `commit_once + always`.
+
+| strategy | hash bits | source layout | wire order | lost recovery | edit distance | overhead |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| model only | 4 | contiguous | none | 0.2736 | 48.7 | 0.0000 |
+| model only | 4 | contiguous | matrix | 0.3305 | 45.1 | 0.0000 |
+| model only | 4 | round_robin_chunks | none | 0.5515 | 30.9 | 0.0000 |
+| model only | 4 | round_robin_chunks | matrix | 0.5890 | 29.4 | 0.0000 |
+| hash4 | 4 | contiguous | none | 0.4347 | 38.3 | 0.2279 |
+| hash4 | 4 | contiguous | matrix | 0.5052 | 34.4 | 0.2279 |
+| hash4 | 4 | round_robin_chunks | none | 0.6667 | 23.6 | 0.2279 |
+| hash4 | 4 | round_robin_chunks | matrix | 0.7173 | 20.7 | 0.2279 |
+| hash8 | 8 | contiguous | none | 0.5871 | 28.3 | 0.4559 |
+| hash8 | 8 | contiguous | matrix | 0.6280 | 26.1 | 0.4559 |
+| hash8 | 8 | round_robin_chunks | none | 0.7567 | 17.2 | 0.4559 |
+| hash8 | 8 | round_robin_chunks | matrix | 0.7900 | 15.4 | 0.4559 |
+| hash16 | 16 | contiguous | none | 0.6451 | 24.6 | 0.9118 |
+| hash16 | 16 | contiguous | matrix | 0.6772 | 22.4 | 0.9118 |
+| hash16 | 16 | round_robin_chunks | none | 0.7795 | 15.8 | 0.9118 |
+| hash16 | 16 | round_robin_chunks | matrix | 0.8154 | 13.5 | 0.9118 |
+
+All rows preserved known tokens, left zero mask tokens, used eight model forward
+calls, and had exact-match rate `0.0`. Source/token-level round-robin
+interleaving provided the largest improvement by dispersing erasures across the
+sequence. Packet-level matrix wire interleaving also helped under the fixed IID
+seed, but the effect was smaller. The best validation cell was hash16 with both
+round-robin source layout and matrix wire order: recovery `0.8154`, edit
+distance `13.5`.
+
+Qualitatively, round-robin interleaving reduced repeated local collapses. For
+example, a contiguous hash16 reconstruction for `wiki_48` began with repeated
+`Doug`, while the round-robin plus matrix version recovered the opening location
+and age details much more closely. This is validation evidence, not a final
+research claim.
+
 ## Analysis Artifacts
 
 Build analysis artifacts for any directory containing run outputs:
