@@ -239,6 +239,39 @@ Result rows and manifests include `editable_update_mode` and
 `hash_constraint_schedule`, and analysis groups by those fields so ablation rows
 do not collapse together.
 
+The first real LLaDA refinement ablation completed on 2026-05-09:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-refinement-20260509_110123
+```
+
+It reused the frozen 10-sample LLaDA-tokenized WikiText artifact, hash profiles,
+IID `loss_rate=0.5`, `tokens_per_packet=4`, `seed=0`, and `steps=8`.
+
+| strategy | update mode | schedule | lost recovery | edit distance | overhead | latency sec |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| model only | commit_once | always | 0.2736 | 48.7 | 0.0000 | 3.9034 |
+| model only | resample_each_step | always | 0.2302 | 52.4 | 0.0000 | 6.9380 |
+| hash4 | commit_once | always | 0.4347 | 38.3 | 0.2279 | 3.2783 |
+| hash4 | resample_each_step | always | 0.3997 | 41.4 | 0.2279 | 4.9633 |
+| hash4 | resample_each_step | final_only | 0.3323 | 45.9 | 0.2279 | 6.5466 |
+| hash4 | resample_each_step | late_half | 0.3305 | 46.3 | 0.2279 | 5.8959 |
+| hash8 | commit_once | always | 0.5871 | 28.3 | 0.4559 | 2.9861 |
+| hash8 | resample_each_step | always | 0.4851 | 35.8 | 0.4559 | 4.0878 |
+| hash8 | resample_each_step | final_only | 0.4137 | 40.3 | 0.4559 | 6.4568 |
+| hash8 | resample_each_step | late_half | 0.4283 | 39.4 | 0.4559 | 5.3928 |
+| hash16 | commit_once | always | 0.6451 | 24.6 | 0.9118 | 3.1109 |
+| hash16 | resample_each_step | always | 0.5587 | 30.9 | 0.9118 | 4.0781 |
+| hash16 | resample_each_step | final_only | 0.5338 | 32.4 | 0.9118 | 6.6556 |
+| hash16 | resample_each_step | late_half | 0.5355 | 32.3 | 0.9118 | 5.5382 |
+
+All rows preserved known tokens, left zero mask tokens, and used eight model
+forward calls. Under this configuration, commit-once remained better than
+resampling for all hash levels. Qualitatively, resampling sometimes drifted into
+repetitive or locally awkward text, while commit-once tended to preserve a more
+stable reconstruction. This remains decoder-design validation, not a final
+research result.
+
 ## Analysis Artifacts
 
 Build analysis artifacts for any directory containing run outputs:
