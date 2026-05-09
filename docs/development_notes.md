@@ -319,6 +319,13 @@ ask that hook to choose from the already-constrained candidate set instead of
 materializing full-vocabulary logits. Real LLaDA still uses the normal
 `forward(...).logits` path.
 
+For full-vocabulary torch logits, real LLaDA token selection is vectorized over
+the legal candidate IDs instead of scanning candidates one token at a time in
+Python. This preserves the real adapter behavior while avoiding a CPU-side
+bottleneck observed during the first 10-sample dataset-backed validation run.
+The older Python candidate scan remains as the fallback for simple fake logits
+and non-tensor test doubles.
+
 Result CSVs can be aggregated with:
 
 ```python

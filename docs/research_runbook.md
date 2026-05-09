@@ -141,6 +141,43 @@ restricted to their hash buckets, and unguided positions still exclude banned
 special tokens. This remains engineering validation only, not a research model
 baseline.
 
+### Completed 10-Sample Validation Pass
+
+The first dataset-backed validation pass completed on the GPU server on
+2026-05-09. It used the frozen 10-sample LLaDA-tokenized WikiText artifact:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/tokenized_artifacts/llada_tokenized_wikitext2_genfec_seed0_max128.json
+```
+
+The run root was:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-20260508_232013
+```
+
+This validation used `tokens_per_packet=4`, IID packet loss at `loss_rate=0.5`,
+`steps=2`, `seed=0`, and the loaded real LLaDA hash profile directory:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/hash_profiles/llada_1_5_real_smoke_v1
+```
+
+The pass produced fake/model-free validation sweeps, real LLaDA model-only,
+real LLaDA hash4/hash8/hash16 runs, and analysis artifacts. Mean real LLaDA
+validation results were:
+
+| strategy | lost recovery | token edit distance | total overhead | decode latency sec | run wall sec |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| model only | 0.2990 | 47.3 | 0.0000 | 1.4137 | 98.6374 |
+| hash4 | 0.4472 | 37.6 | 0.2279 | 1.1238 | 94.3607 |
+| hash8 | 0.5451 | 31.2 | 0.4559 | 0.9810 | 91.5803 |
+| hash16 | 0.6348 | 25.8 | 0.9118 | 1.0216 | 98.2813 |
+
+All real rows preserved known tokens, left zero mask tokens, and used two model
+forward calls. This is a healthy dataset-backed validation result, but it is
+still not a final research claim.
+
 ## Analysis Artifacts
 
 Build analysis artifacts for any directory containing run outputs:
