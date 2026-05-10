@@ -38,6 +38,11 @@ from diffusion_fec.decoding.llada_diffusion import (
     DiffusionDecodingConfig,
 )
 from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
+from diffusion_fec.experiments.hybrid_eval import (
+    DEFAULT_XOR_OVERHEAD_BITS_PER_TOKEN,
+    HYBRID_MODE_PARITY_FILTER,
+    HYBRID_MODE_PRE_PEEL_ONLY,
+)
 from diffusion_fec.experiments.micro_eval import (
     DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
     MICRO_EVAL_MODEL_HASH,
@@ -253,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-llada-tokenized-artifact", action="store_true")
     parser.add_argument("--micro-eval", action="store_true")
     parser.add_argument("--xor-parity-micro-eval", action="store_true")
+    parser.add_argument("--hybrid-xor-hash-micro-eval", action="store_true")
+    parser.add_argument("--real-llada-hybrid-xor-hash-micro-eval", action="store_true")
     parser.add_argument("--lt-fountain-micro-eval", action="store_true")
     parser.add_argument("--streaming-window-micro-eval", action="store_true")
     parser.add_argument("--synthetic-sweep", action="store_true")
@@ -336,6 +343,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--xor-stripe-size", type=int, default=4)
     parser.add_argument("--xor-stripe-stride", type=int)
+    parser.add_argument(
+        "--hybrid-mode",
+        default=HYBRID_MODE_PARITY_FILTER,
+        choices=[HYBRID_MODE_PRE_PEEL_ONLY, HYBRID_MODE_PARITY_FILTER],
+    )
+    parser.add_argument(
+        "--xor-overhead-bits-per-token",
+        type=float,
+        default=DEFAULT_XOR_OVERHEAD_BITS_PER_TOKEN,
+    )
+    parser.add_argument(
+        "--parity-filter-fallback",
+        default="on",
+        choices=["on", "off"],
+    )
     parser.add_argument("--lt-repair-rate", type=float, default=0.25)
     parser.add_argument("--lt-random-seed", type=int, default=7)
     parser.add_argument("--lt-coverage-aware", action="store_true")
@@ -385,6 +407,8 @@ def main(argv: list[str] | None = None) -> int:
         args.build_llada_tokenized_artifact,
         args.micro_eval,
         args.xor_parity_micro_eval,
+        args.hybrid_xor_hash_micro_eval,
+        args.real_llada_hybrid_xor_hash_micro_eval,
         args.lt_fountain_micro_eval,
         args.streaming_window_micro_eval,
         args.synthetic_sweep,
@@ -394,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
     if sum(1 for selected in selected_runners if selected) > 1:
         parser.error(
             "--build-llada-tokenized-artifact, --micro-eval, --xor-parity-micro-eval, "
+            "--hybrid-xor-hash-micro-eval, --real-llada-hybrid-xor-hash-micro-eval, "
             "--lt-fountain-micro-eval, --streaming-window-micro-eval, --synthetic-sweep, "
             "--real-llada-smoke, and --real-llada-micro-eval are separate runners"
         )
@@ -545,6 +570,42 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.hybrid_xor_hash_micro_eval:
+        from diffusion_fec.experiments.hybrid_eval import run_hybrid_xor_hash_micro_eval
+
+        run_hybrid_xor_hash_micro_eval(
+            output_dir=args.output_dir,
+            sample_lengths=_parse_sample_lengths(
+                args.sample_lengths,
+                default=(
+                    tuple(len(sample.token_ids) for sample in dataset_samples)
+                    if dataset_samples is not None
+                    else DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS
+                ),
+            ),
+            samples=dataset_samples,
+            dataset_info=dataset_info,
+            loss_rate=args.loss_rate,
+            seed=args.seed,
+            tokens_per_packet=args.tokens_per_packet,
+            hash_bits=args.hash_bits,
+            xor_overhead_bits_per_token=args.xor_overhead_bits_per_token,
+            vocab_size=args.vocab_size,
+            steps=args.steps,
+            editable_update_mode=args.editable_update_mode,
+            hash_constraint_schedule=args.hash_constraint_schedule,
+            hybrid_mode=args.hybrid_mode,
+            parity_filter_fallback=args.parity_filter_fallback == "on",
+            source_layout=_source_layout_from_args(args),
+            wire_interleaving=_wire_interleaving_from_args(args),
+            channel_config=_channel_config_from_args(args),
+            hash_profile_dir=args.hash_profile_dir,
+            build_hash_profile=args.build_hash_profile,
+            hash_map_mode=args.hash_map_mode,
+            hash_profile_name=args.hash_profile_name or "fake_hybrid_xor_hash_v1",
+        )
+        return 0
+
     if args.lt_fountain_micro_eval:
         from diffusion_fec.experiments.classical_micro_eval import run_lt_fountain_micro_eval
 
@@ -647,6 +708,55 @@ def main(argv: list[str] | None = None) -> int:
             )
         except RealLLaDAMicroEvalUnavailable as exc:
             print(f"Real LLaDA micro-eval unavailable: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.real_llada_hybrid_xor_hash_micro_eval:
+        if args.build_hash_profile:
+            parser.error(
+                "--build-hash-profile is not allowed for real LLaDA hybrid micro-eval; "
+                "build profiles ahead of time and pass --hash-profile-dir"
+            )
+        from diffusion_fec.experiments.hybrid_eval import (
+            run_real_llada_hybrid_xor_hash_micro_eval,
+        )
+        from diffusion_fec.experiments.llada_micro_eval import RealLLaDAMicroEvalUnavailable
+
+        try:
+            run_real_llada_hybrid_xor_hash_micro_eval(
+                output_dir=args.output_dir,
+                model_id=args.llada_model_id,
+                sample_lengths=_parse_sample_lengths(
+                    args.sample_lengths,
+                    default=(8,),
+                ),
+                loss_rate=args.loss_rate,
+                seed=args.seed,
+                tokens_per_packet=args.tokens_per_packet,
+                hash_bits=args.hash_bits,
+                xor_overhead_bits_per_token=args.xor_overhead_bits_per_token,
+                steps=args.steps,
+                editable_update_mode=args.editable_update_mode,
+                hash_constraint_schedule=args.hash_constraint_schedule,
+                hybrid_mode=args.hybrid_mode,
+                parity_filter_fallback=args.parity_filter_fallback == "on",
+                local_files_only=args.llada_local_files_only,
+                allow_cpu=args.allow_cpu_real_llada,
+                hash_profile_dir=args.hash_profile_dir,
+                hash_map_mode=args.hash_map_mode,
+                dataset_path=args.dataset_file,
+                dataset_label=args.dataset_label,
+                dataset_sample_count=args.dataset_sample_count,
+                dataset_seed=args.dataset_seed,
+                dataset_min_tokens=args.dataset_min_tokens,
+                dataset_max_tokens=args.dataset_max_tokens,
+                tokenized_samples_path=args.tokenized_samples_file,
+                source_layout=_source_layout_from_args(args),
+                wire_interleaving=_wire_interleaving_from_args(args),
+                channel_config=_channel_config_from_args(args),
+            )
+        except RealLLaDAMicroEvalUnavailable as exc:
+            print(f"Real LLaDA hybrid micro-eval unavailable: {exc}", file=sys.stderr)
             return 2
         return 0
 

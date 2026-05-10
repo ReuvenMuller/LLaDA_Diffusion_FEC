@@ -227,6 +227,43 @@ python -m diffusion_fec.experiments.runner `
 Use the same `--source-layout`, `--wire-interleaving`, and `--channel` flags as
 the fake LLaDA micro-eval runner.
 
+## Hybrid Hash + XOR Notes
+
+The hybrid validation path keeps XOR-only separate from LLaDA. It transmits
+lookback-1 hash metadata on data packets and XOR parity packets through the same
+packet-loss channel, then uses only surviving metadata at the receiver.
+
+Local fake hybrid command:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\hybrid_fake_smoke `
+  --hybrid-xor-hash-micro-eval `
+  --sample-lengths 12 `
+  --tokens-per-packet 3 `
+  --vocab-size 64 `
+  --hash-bits 4 `
+  --xor-overhead-bits-per-token 4 `
+  --hybrid-mode parity_filter
+```
+
+Real LLaDA hybrid runs require the explicit
+`--real-llada-hybrid-xor-hash-micro-eval` flag and a loaded hash profile. They
+must not use `--build-hash-profile`.
+
+Hybrid modes:
+
+- `pre_peel_only`: XOR peel first, promote hash-consistent peeled tokens to
+  known/fixed, then run LLaDA on remaining erasures.
+- `parity_filter`: also filter LLaDA candidates when received parity equations
+  are locally determined. Empty parity-filtered candidate sets fall back to
+  hash-only candidates by default and log `parity_filter_fallback_count`.
+
+Hybrid result rows include `total_overhead_ratio`, which is the sum of
+token-equivalent hash metadata overhead and XOR repair-token overhead. Compare
+hybrid rows against hash-only and XOR-only rows with this field, not the nominal
+hash/XOR labels.
+
 LT/fountain baseline micro-eval:
 
 ```powershell

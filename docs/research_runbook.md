@@ -317,6 +317,82 @@ example, a contiguous hash16 reconstruction for `wiki_48` began with repeated
 and age details much more closely. This is validation evidence, not a final
 research claim.
 
+### Hybrid Hash + XOR Validation
+
+The framework includes an experimental hybrid validation runner for testing
+whether transmitted `hash4` metadata plus XOR parity can approach `hash8`
+performance at roughly comparable total overhead.
+
+Two hybrid modes are available:
+
+```text
+pre_peel_only
+parity_filter
+```
+
+`pre_peel_only` transmits lookback-1 hash metadata on data packets, transmits
+XOR parity packets through the same channel, peels any directly solvable XOR
+equations after loss, hash-validates peeled tokens when received hash metadata
+exists for that position, and then runs LLaDA on the remaining erasures.
+
+`parity_filter` does the same initial peeling, then applies a local parity
+candidate filter during LLaDA decoding. Hash filtering still happens first. The
+parity filter rejects candidates only when a received parity equation is fully
+determined by known/committed tokens plus the current candidate. If filtering
+empties the candidate set, the default is to fall back to the hash-filtered
+candidate set and log `parity_filter_fallback_count`.
+
+Local fake/model-free smoke:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\hybrid_fake_smoke `
+  --hybrid-xor-hash-micro-eval `
+  --sample-lengths 12 `
+  --tokens-per-packet 3 `
+  --vocab-size 64 `
+  --steps 2 `
+  --hash-bits 4 `
+  --hybrid-mode parity_filter `
+  --xor-overhead-bits-per-token 4 `
+  --source-layout round_robin_chunks `
+  --source-chunk-size 1 `
+  --wire-interleaving matrix `
+  --wire-interleaving-span 4 `
+  --channel burst `
+  --burst-start-wire-id 0 `
+  --burst-length 3
+```
+
+Server real-LLaDA hybrid command shape:
+
+```bash
+python -m diffusion_fec.experiments.runner \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/real_llada_hybrid_hash4_xor4 \
+  --real-llada-hybrid-xor-hash-micro-eval \
+  --hash-profile-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/hash_profiles/llada_1_5_real_smoke_v1 \
+  --tokenized-samples-file /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/tokenized_artifacts/llada_tokenized_wikitext2_genfec_seed0_max128.json \
+  --llada-local-files-only \
+  --tokens-per-packet 4 \
+  --hash-bits 4 \
+  --xor-overhead-bits-per-token 4 \
+  --steps 8 \
+  --seed 0 \
+  --source-layout round_robin_chunks \
+  --source-chunk-size 1 \
+  --wire-interleaving matrix \
+  --wire-interleaving-span 4 \
+  --hybrid-mode parity_filter
+```
+
+Use `--channel burst --burst-start-wire-id 0 --burst-length 16` for the burst
+validation counterpart. Hybrid artifacts report `xor_overhead_bits_per_token`,
+`xor_target_overhead_ratio`, `actual_repair_token_overhead_ratio`,
+hash-metadata overhead, `total_overhead_ratio`, parity peel counts, parity/hash
+conflicts, parity candidate rejections, parity filter fallbacks, and final
+parity audit counts. These are decoder and coding validation outputs, not final
+research claims.
+
 ## Analysis Artifacts
 
 Build analysis artifacts for any directory containing run outputs:

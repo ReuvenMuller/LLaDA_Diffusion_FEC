@@ -15,6 +15,7 @@ DEFAULT_REPORT_GROUP_BY = (
     "strategy",
     "protection_mode",
     "channel_mode",
+    "hybrid_mode",
     "source_layout",
     "wire_interleaving",
     "loss_rate",
@@ -26,6 +27,7 @@ SUMMARY_FIELDS = (
     "strategy",
     "protection_mode",
     "channel_mode",
+    "hybrid_mode",
     "source_layout",
     "wire_interleaving",
     "loss_rate",
@@ -43,6 +45,12 @@ SUMMARY_FIELDS = (
     "mean_hash_metadata_token_equivalent_overhead_ratio",
     "mean_actual_repair_token_overhead_ratio",
     "mean_total_overhead_ratio",
+    "mean_parity_peel_recovered_count",
+    "mean_parity_hash_conflict_count",
+    "mean_parity_candidate_rejections",
+    "mean_parity_filter_fallback_count",
+    "mean_parity_equations_satisfied",
+    "mean_parity_equations_violated",
 )
 PLOT_SPECS = (
     ("exact_match_rate.svg", "Exact Match Rate", "exact_match_rate"),

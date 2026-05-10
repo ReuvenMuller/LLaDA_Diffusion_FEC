@@ -28,6 +28,16 @@ from diffusion_fec.baselines.xor_parity import (
     encode_xor_parity,
     reconstruct_xor_parity,
 )
+from diffusion_fec.baselines.xor_equations import (
+    ParityCandidateFilter,
+    XorAuditResult,
+    XorPeelResult,
+    XorTokenEquation,
+    audit_xor_equations,
+    equations_from_parity_packets,
+    known_tokens_from_data_packets,
+    peel_xor_equations,
+)
 
 __all__ = [
     "OverheadSummary",
@@ -38,12 +48,20 @@ __all__ = [
     "StreamingWindowConfig",
     "StreamingWindowEncoded",
     "XOR_PARITY_SCHEME",
+    "ParityCandidateFilter",
+    "XorAuditResult",
     "XorParityConfig",
     "XorParityEncoded",
+    "XorPeelResult",
+    "XorTokenEquation",
+    "audit_xor_equations",
     "encode_xor_parity",
     "encode_lt_fountain",
     "encode_streaming_window",
+    "equations_from_parity_packets",
     "estimate_hash_overhead_ratio",
+    "known_tokens_from_data_packets",
+    "peel_xor_equations",
     "reconstruct_xor_parity",
     "reconstruct_lt_fountain",
     "reconstruct_streaming_window",

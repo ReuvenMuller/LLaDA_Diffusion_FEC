@@ -13,6 +13,7 @@ DEFAULT_GROUP_BY = (
     "strategy",
     "protection_mode",
     "channel_mode",
+    "hybrid_mode",
     "editable_update_mode",
     "hash_constraint_schedule",
 )
@@ -31,6 +32,15 @@ NUMERIC_MEAN_FIELDS = (
     "hash_metadata_token_equivalent_overhead_ratio",
     "actual_repair_token_overhead_ratio",
     "total_overhead_ratio",
+    "parity_equation_count",
+    "parity_received_equation_count",
+    "parity_peel_iterations",
+    "parity_peel_recovered_count",
+    "parity_hash_conflict_count",
+    "parity_candidate_rejections",
+    "parity_filter_fallback_count",
+    "parity_equations_satisfied",
+    "parity_equations_violated",
 )
 BOOLEAN_RATE_FIELDS = (
     "exact_match",

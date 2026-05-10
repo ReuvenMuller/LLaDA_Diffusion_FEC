@@ -186,6 +186,7 @@ def decode_masked_diffusion(
     config: DiffusionDecodingConfig,
     token_hash_map: TokenHashMap | None = None,
     prompt_token_ids: Sequence[int] | None = None,
+    candidate_filter: object | None = None,
 ) -> DecodingResult:
     """Decode erased positions with hard fixed-token and hash constraints."""
 
@@ -223,6 +224,9 @@ def decode_masked_diffusion(
     propose_token = getattr(model, "propose_token", None)
     proposal_interface_available = callable(propose_token)
     proposal_calls = 0
+    candidate_filter_available = callable(candidate_filter)
+    candidate_filter_calls = 0
+    candidate_filter_rejections = 0
 
     if masks.editable_count == 0:
         reconstructed_tokens = tuple(x[prompt_length:])
@@ -246,6 +250,11 @@ def decode_masked_diffusion(
                 ),
                 "proposal_interface_available": proposal_interface_available,
                 "proposal_interface_used": False,
+                "candidate_filter_available": candidate_filter_available,
+                "candidate_filter_used": False,
+                "candidate_filter_calls": 0,
+                "candidate_filter_rejections": 0,
+                "candidate_filter_diagnostics": _candidate_filter_diagnostics(candidate_filter),
                 "editable_update_mode": config.editable_update_mode,
                 "hash_constraint_schedule": config.hash_constraint_schedule,
                 "hash_enforced_steps": [],
@@ -293,9 +302,12 @@ def decode_masked_diffusion(
                             token_hash_map=token_hash_map,
                             non_banned_token_ids=non_banned_token_ids,
                             enforce_hash_constraint=True,
+                            candidate_filter=candidate_filter,
                         )
                     )
                     proposal_calls += 1
+                    if candidate_filter_available:
+                        candidate_filter_calls += 1
             else:
                 logits = _extract_logits(
                     model.forward([list(x)], attention_mask=[list(attention_mask)]),
@@ -312,9 +324,14 @@ def decode_masked_diffusion(
                         token_hash_map=token_hash_map,
                         non_banned_token_ids=non_banned_token_ids,
                         enforce_hash_constraint=True,
+                        input_ids=tuple(x),
+                        step=step,
+                        candidate_filter=candidate_filter,
                     )
                     for target_position in editable_target_positions
                 ]
+                if candidate_filter_available:
+                    candidate_filter_calls += len(editable_target_positions)
             proposals.sort(
                 key=lambda proposal: (
                     -proposal.top1_probability,
@@ -392,9 +409,12 @@ def decode_masked_diffusion(
                             token_hash_map=token_hash_map,
                             non_banned_token_ids=non_banned_token_ids,
                             enforce_hash_constraint=enforce_hash,
+                            candidate_filter=candidate_filter,
                         )
                     )
                     proposal_calls += 1
+                    if candidate_filter_available:
+                        candidate_filter_calls += 1
             else:
                 logits = _extract_logits(
                     model.forward([list(x)], attention_mask=[list(attention_mask)]),
@@ -411,9 +431,14 @@ def decode_masked_diffusion(
                         token_hash_map=token_hash_map,
                         non_banned_token_ids=non_banned_token_ids,
                         enforce_hash_constraint=enforce_hash,
+                        input_ids=tuple(x),
+                        step=step,
+                        candidate_filter=candidate_filter,
                     )
                     for target_position in editable_target_positions
                 ]
+                if candidate_filter_available:
+                    candidate_filter_calls += len(editable_target_positions)
 
             committed_stats = []
             step_fallback_positions = []
@@ -481,6 +506,14 @@ def decode_masked_diffusion(
 
     reconstructed_tokens = tuple(x[prompt_length:])
     ordered_stats = tuple(stats_by_position[position] for position in range(plan.total_tokens))
+    candidate_filter_diagnostics = _candidate_filter_diagnostics(candidate_filter)
+    candidate_filter_rejections = int(
+        candidate_filter_diagnostics.get(
+            "parity_candidate_rejections",
+            candidate_filter_rejections,
+        )
+        or 0
+    )
     return DecodingResult(
         reconstructed_text=_decode_tokens(model, reconstructed_tokens),
         reconstructed_tokens=reconstructed_tokens,
@@ -501,6 +534,11 @@ def decode_masked_diffusion(
             ),
             "proposal_interface_available": proposal_interface_available,
             "proposal_interface_used": proposal_calls > 0,
+            "candidate_filter_available": candidate_filter_available,
+            "candidate_filter_used": candidate_filter_calls > 0,
+            "candidate_filter_calls": candidate_filter_calls,
+            "candidate_filter_rejections": candidate_filter_rejections,
+            "candidate_filter_diagnostics": candidate_filter_diagnostics,
             "editable_update_mode": config.editable_update_mode,
             "hash_constraint_schedule": config.hash_constraint_schedule,
             "hash_enforced_steps": tuple(hash_enforced_steps),
@@ -626,6 +664,9 @@ def _proposal_for_position(
     token_hash_map: TokenHashMap | None,
     non_banned_token_ids: tuple[int, ...],
     enforce_hash_constraint: bool,
+    input_ids: tuple[int, ...],
+    step: int,
+    candidate_filter: object | None,
 ) -> _Proposal:
     candidates, used_fallback = _candidate_token_ids(
         entry=entry,
@@ -633,6 +674,14 @@ def _proposal_for_position(
         token_hash_map=token_hash_map,
         non_banned_token_ids=non_banned_token_ids,
         enforce_hash_constraint=enforce_hash_constraint,
+    )
+    candidates = _apply_candidate_filter(
+        candidate_filter=candidate_filter,
+        entry=entry,
+        full_position=full_position,
+        candidate_token_ids=candidates,
+        input_ids=input_ids,
+        step=step,
     )
     token_id, top1_probability, top2_probability = _select_argmax_with_confidence(
         position_logits,
@@ -660,6 +709,7 @@ def _proposal_from_model_hook(
     token_hash_map: TokenHashMap | None,
     non_banned_token_ids: tuple[int, ...],
     enforce_hash_constraint: bool,
+    candidate_filter: object | None,
 ) -> _Proposal:
     candidates, used_fallback = _candidate_token_ids(
         entry=entry,
@@ -667,6 +717,14 @@ def _proposal_from_model_hook(
         token_hash_map=token_hash_map,
         non_banned_token_ids=non_banned_token_ids,
         enforce_hash_constraint=enforce_hash_constraint,
+    )
+    candidates = _apply_candidate_filter(
+        candidate_filter=candidate_filter,
+        entry=entry,
+        full_position=full_position,
+        candidate_token_ids=candidates,
+        input_ids=input_ids,
+        step=step,
     )
     choice = _normalize_proposal_choice(
         propose_token(
@@ -710,6 +768,56 @@ def _normalize_proposal_choice(value: Any) -> _ProposalChoice:
         top1_probability=float(getattr(value, "top1_probability", 1.0)),
         top2_probability=float(getattr(value, "top2_probability", 0.0)),
     )
+
+
+def _apply_candidate_filter(
+    *,
+    candidate_filter: object | None,
+    entry: ReconstructionEntry,
+    full_position: int,
+    candidate_token_ids: tuple[int, ...],
+    input_ids: tuple[int, ...],
+    step: int,
+) -> tuple[int, ...]:
+    if candidate_filter is None:
+        return candidate_token_ids
+    if not callable(candidate_filter):
+        raise TypeError("candidate_filter must be callable when set")
+
+    result = candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidate_token_ids,
+        input_ids=input_ids,
+        step=step,
+        full_position=full_position,
+    )
+    if isinstance(result, dict):
+        result = result.get("candidate_token_ids", result.get("candidates"))
+    if result is None:
+        raise ValueError("candidate_filter must return candidate_token_ids")
+    filtered = tuple(int(token_id) for token_id in result)
+    original = set(candidate_token_ids)
+    outside = [token_id for token_id in filtered if token_id not in original]
+    if outside:
+        raise ValueError("candidate_filter must return a subset of candidate_token_ids")
+    if not filtered:
+        raise RuntimeError("candidate_filter returned no candidate token IDs")
+    return filtered
+
+
+def _candidate_filter_diagnostics(candidate_filter: object | None) -> dict[str, Any]:
+    if candidate_filter is None:
+        return {}
+    diagnostics = getattr(candidate_filter, "diagnostics", None)
+    if callable(diagnostics):
+        value = diagnostics()
+        if not isinstance(value, dict):
+            raise TypeError("candidate_filter.diagnostics() must return a dict")
+        return dict(value)
+    value = getattr(candidate_filter, "diagnostics", None)
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
 
 
 def _candidate_token_ids(

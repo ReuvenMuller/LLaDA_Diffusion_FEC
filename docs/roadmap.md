@@ -44,6 +44,9 @@ Done:
   and qualitative failure examples
 - comparable overhead accounting across model+hash metadata and classical repair
   packets via `total_overhead_ratio`
+- experimental hybrid hash+XOR validation path with initial XOR peeling,
+  optional parity candidate filtering during LLaDA decoding, final parity audit,
+  and IID/burst channel support
 - research runbook with local, server, profile, and final experiment conventions
 
 Not done:
@@ -181,6 +184,23 @@ code should not live in decoder modules.
 
 Status: overhead accounting, XOR parity, LT/fountain, and streaming-window baselines are
 implemented with artifact-writing synthetic micro-evals and tests.
+
+### Phase 5B: Hybrid Hash + XOR Validation
+
+Add an experimental integrated path:
+
+- transmit lookback-1 token hashes on data packets
+- transmit XOR parity packets through the same channel
+- peel directly solvable parity equations after loss
+- promote peeled tokens only when hash-consistent if hash metadata exists
+- run LLaDA on remaining erasures
+- optionally apply parity-aware candidate filtering during decoding
+- audit final parity equation satisfaction
+
+Status: implemented for validation. XOR-only remains a separate baseline.
+Hybrid artifacts report hash overhead, XOR repair overhead, total overhead,
+peel statistics, parity/hash conflicts, candidate rejections, fallbacks, and
+final parity audit counts.
 
 ### Phase 6: Datasets, Sweeps, And Analysis
 
