@@ -41,6 +41,33 @@ def test_channel_reanalysis_patches_existing_result_rows(tmp_path) -> None:
     assert aggregate["mean_channel_lost_position_recovery_rate"] == "1.0"
 
 
+def test_channel_reanalysis_uses_child_run_directory_to_avoid_key_collisions(tmp_path) -> None:
+    first = tmp_path / "runs" / "first"
+    second = tmp_path / "runs" / "second"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    _write_results_csv(first / "results.csv")
+    _write_results_csv(second / "results.csv")
+    _write_events_jsonl(first / "events.jsonl")
+    _write_events_jsonl(
+        second / "events.jsonl",
+        dropped_positions=[2, 3],
+        reconstructed_tokens=[10, 11, 0, 0],
+    )
+
+    recompute_channel_lost_metrics_for_run(
+        run_root=tmp_path / "runs",
+        output_dir=tmp_path / "reanalysis",
+        patch_results=True,
+    )
+
+    first_row = read_csv(first / "results.csv")[0]
+    second_row = read_csv(second / "results.csv")[0]
+
+    assert first_row["channel_lost_position_recovery_rate"] == "1.0"
+    assert second_row["channel_lost_position_recovery_rate"] == "0.0"
+
+
 def _write_results_csv(path) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -71,7 +98,14 @@ def _write_results_csv(path) -> None:
         )
 
 
-def _write_events_jsonl(path) -> None:
+def _write_events_jsonl(
+    path,
+    *,
+    dropped_positions=None,
+    reconstructed_tokens=None,
+) -> None:
+    dropped_positions = dropped_positions or [0, 1]
+    reconstructed_tokens = reconstructed_tokens or [10, 11, 12, 13]
     event = {
         "event_type": "xor_parity_micro_eval_case",
         "run_id": "run-a",
@@ -89,7 +123,7 @@ def _write_events_jsonl(path) -> None:
                     "wire_id": 0,
                     "kind": "data",
                     "token_ids": [10, 11],
-                    "token_positions": [0, 1],
+                    "token_positions": dropped_positions,
                     "metadata": {},
                 },
                 {
@@ -102,7 +136,7 @@ def _write_events_jsonl(path) -> None:
                 },
             ]
         },
-        "reconstructed_tokens": [10, 11, 12, 13],
+        "reconstructed_tokens": reconstructed_tokens,
         "metrics": {
             "exact_match": True,
             "lost_position_recovery_rate": 1.0,

@@ -43,13 +43,17 @@ def recompute_channel_lost_metrics_for_run(
     result_paths = discover_result_csvs(root)
 
     metric_rows: list[dict[str, Any]] = []
-    metrics_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    metrics_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for event_path in event_paths:
         for event in _read_jsonl(event_path):
             record = _channel_metric_record(event=event, event_path=event_path)
             if record is None:
                 continue
-            key = (str(record["run_id"]), str(record["case_id"]))
+            key = (
+                str(event_path.parent.resolve()),
+                str(record["run_id"]),
+                str(record["case_id"]),
+            )
             metrics_by_key[key] = {
                 field: record[field]
                 for field in CHANNEL_METRIC_FIELDS
@@ -62,7 +66,11 @@ def recompute_channel_lost_metrics_for_run(
         rows, fieldnames = _read_csv(result_path)
         patched_rows = []
         for row in rows:
-            key = (str(row.get("run_id", "")), str(row.get("case_id", "")))
+            key = (
+                str(result_path.parent.resolve()),
+                str(row.get("run_id", "")),
+                str(row.get("case_id", "")),
+            )
             patched = dict(row)
             if key in metrics_by_key:
                 patched.update(metrics_by_key[key])
