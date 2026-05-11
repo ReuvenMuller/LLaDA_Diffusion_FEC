@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from diffusion_fec.baselines.overhead import (
     metadata_token_equivalent_overhead_ratio,
@@ -100,7 +101,14 @@ from diffusion_fec.types import (
 
 HYBRID_MODE_PRE_PEEL_ONLY = "pre_peel_only"
 HYBRID_MODE_PARITY_FILTER = "parity_filter"
-VALID_HYBRID_MODES = frozenset({HYBRID_MODE_PRE_PEEL_ONLY, HYBRID_MODE_PARITY_FILTER})
+HYBRID_MODE_ITERATIVE_PEEL = "iterative_peel"
+VALID_HYBRID_MODES = frozenset(
+    {
+        HYBRID_MODE_PRE_PEEL_ONLY,
+        HYBRID_MODE_PARITY_FILTER,
+        HYBRID_MODE_ITERATIVE_PEEL,
+    }
+)
 HYBRID_PROTECTION_MODE = "lookback_1+xor_parity"
 FAKE_HYBRID_MODEL_LABEL = "FakeDeterministicHybridXorHashModel"
 REAL_HYBRID_MODEL_KIND = "real_llada_huggingface_hybrid_xor_hash"
@@ -165,6 +173,109 @@ class HybridRecoveryCase:
             "channel_lost_metrics": self.channel_lost_metrics.to_dict(),
             "metrics": {**self.metrics.to_dict(), **self.channel_lost_metrics.to_dict()},
         }
+
+
+class IterativeXorPeelHook:
+    """Post-commit hook that promotes newly XOR-solvable tokens to fixed."""
+
+    def __init__(
+        self,
+        *,
+        equations,
+        hash_metadata: Mapping[int, int],
+        token_hash_map: TokenHashMap,
+        mask_token_id: int,
+        vocab_size: int,
+        banned_token_ids: Sequence[int],
+    ) -> None:
+        self.equations = tuple(equations)
+        self.hash_metadata = {int(position): int(value) for position, value in hash_metadata.items()}
+        self.token_hash_map = token_hash_map
+        self.mask_token_id = int(mask_token_id)
+        self.vocab_size = int(vocab_size)
+        self.banned_token_ids = frozenset(int(token_id) for token_id in banned_token_ids)
+        self.call_count = 0
+        self.per_step_recovered_count: list[int] = []
+        self.recovered_tokens: dict[int, int] = {}
+        self.conflicts = {}
+
+    def __call__(
+        self,
+        *,
+        input_ids,
+        step: int,
+        prompt_length: int,
+        committed_positions,
+        fixed_token_ids,
+        plan: ReconstructionPlan,
+        config: DiffusionDecodingConfig,
+    ) -> dict[str, Any]:
+        self.call_count += 1
+        known_tokens = _known_tokens_from_decoder_state(
+            input_ids=input_ids,
+            plan=plan,
+            prompt_length=prompt_length,
+            mask_token_id=self.mask_token_id,
+        )
+        peel = peel_xor_equations(
+            equations=self.equations,
+            known_tokens=known_tokens,
+            hash_metadata=self.hash_metadata,
+            token_hash_map=self.token_hash_map,
+            vocab_size=self.vocab_size,
+            banned_token_ids=self.banned_token_ids,
+        )
+        self._record_conflicts(peel)
+        newly_fixed = {
+            int(position): int(token_id)
+            for position, token_id in peel.recovered_tokens.items()
+            if int(position) not in self.recovered_tokens
+            and input_ids[prompt_length + int(position)] == self.mask_token_id
+        }
+        self.recovered_tokens.update(newly_fixed)
+        self.per_step_recovered_count.append(len(newly_fixed))
+        return {"fixed_tokens": newly_fixed}
+
+    def diagnostics(self) -> dict[str, Any]:
+        conflicts = tuple(self.conflicts.values())
+        return {
+            "iterative_peel_enabled": True,
+            "iterative_peel_passes": self.call_count,
+            "iterative_peel_recovered_count": len(self.recovered_tokens),
+            "iterative_peel_recovered_positions": tuple(sorted(self.recovered_tokens)),
+            "iterative_peel_recovered_count_by_step": tuple(self.per_step_recovered_count),
+            "iterative_peel_conflict_count": len(conflicts),
+            "iterative_peel_hash_conflict_count": sum(
+                conflict.reason in {
+                    "parity_hash_conflict",
+                    "hash_metadata_without_token_hash_map",
+                }
+                for conflict in conflicts
+            ),
+            "iterative_peel_special_token_conflict_count": sum(
+                conflict.reason == "solved_token_is_banned"
+                for conflict in conflicts
+            ),
+            "iterative_peel_vocab_conflict_count": sum(
+                conflict.reason in {
+                    "solved_token_negative",
+                    "solved_token_outside_vocab",
+                    "solved_token_outside_hash_vocab",
+                }
+                for conflict in conflicts
+            ),
+            "iterative_peel_conflicts": [conflict.to_dict() for conflict in conflicts],
+        }
+
+    def _record_conflicts(self, peel: XorPeelResult) -> None:
+        for conflict in peel.conflicts:
+            key = (
+                conflict.equation_id,
+                conflict.position,
+                conflict.solved_token_id,
+                conflict.reason,
+            )
+            self.conflicts[key] = conflict
 
 
 def run_hybrid_xor_hash_micro_eval(
@@ -407,6 +518,8 @@ def run_hybrid_recovery_case(
     """Run one hybrid packet-loss and LLaDA recovery case."""
 
     _validate_hybrid_mode(hybrid_mode)
+    if hybrid_mode == HYBRID_MODE_ITERATIVE_PEEL:
+        _validate_iterative_peel_decoder_config(config)
     encoded = encode_xor_parity(
         sample,
         tokens_per_packet=tokens_per_packet,
@@ -437,6 +550,8 @@ def run_hybrid_recovery_case(
         known_tokens=known_tokens,
         hash_metadata=hash_metadata,
         token_hash_map=token_hash_map,
+        vocab_size=config.vocab_size,
+        banned_token_ids=config.special_token_ids,
     )
     hash_metadata = _filter_known_position_hash_metadata(
         hash_metadata,
@@ -448,12 +563,22 @@ def run_hybrid_recovery_case(
         hash_metadata=hash_metadata,
     )
     parity_filter = None
-    if hybrid_mode == HYBRID_MODE_PARITY_FILTER:
+    if hybrid_mode in {HYBRID_MODE_PARITY_FILTER, HYBRID_MODE_ITERATIVE_PEEL}:
         parity_filter = ParityCandidateFilter(
             equations=received_equations,
             known_tokens=initial_peel.known_tokens,
             mask_token_id=config.mask_token_id,
             fallback_on_empty=parity_filter_fallback,
+        )
+    post_commit_hook = None
+    if hybrid_mode == HYBRID_MODE_ITERATIVE_PEEL:
+        post_commit_hook = IterativeXorPeelHook(
+            equations=received_equations,
+            hash_metadata=hash_metadata,
+            token_hash_map=token_hash_map,
+            mask_token_id=config.mask_token_id,
+            vocab_size=config.vocab_size,
+            banned_token_ids=config.special_token_ids,
         )
     decoding_result = decode_masked_diffusion(
         model=model,
@@ -461,6 +586,7 @@ def run_hybrid_recovery_case(
         config=config,
         token_hash_map=token_hash_map,
         candidate_filter=parity_filter,
+        post_commit_hook=post_commit_hook,
     )
     parity_filter_diagnostics = (
         parity_filter.diagnostics() if parity_filter is not None else _empty_filter_diagnostics()
@@ -478,6 +604,11 @@ def run_hybrid_recovery_case(
         initial_peel=initial_peel,
         final_audit=final_audit,
         parity_filter_diagnostics=parity_filter_diagnostics,
+        iterative_peel_diagnostics=(
+            post_commit_hook.diagnostics()
+            if post_commit_hook is not None
+            else _empty_iterative_peel_diagnostics()
+        ),
         parity_equation_count=len(equations_from_parity_packets(encoded.parity_packets)),
         parity_received_equation_count=len(received_equations),
     )
@@ -768,6 +899,28 @@ def _result_row(
         "parity_peel_iterations": case.initial_peel.peel_iteration_count,
         "parity_peel_recovered_count": case.initial_peel.recovered_count,
         "parity_hash_conflict_count": case.initial_peel.conflict_count,
+        "iterative_peel_enabled": diagnostics.get("iterative_peel_enabled", False),
+        "iterative_peel_passes": diagnostics.get("iterative_peel_passes", 0),
+        "iterative_peel_recovered_count": diagnostics.get("iterative_peel_recovered_count", 0),
+        "iterative_peel_hash_conflict_count": diagnostics.get(
+            "iterative_peel_hash_conflict_count",
+            0,
+        ),
+        "iterative_peel_special_token_conflict_count": diagnostics.get(
+            "iterative_peel_special_token_conflict_count",
+            0,
+        ),
+        "iterative_peel_vocab_conflict_count": diagnostics.get(
+            "iterative_peel_vocab_conflict_count",
+            0,
+        ),
+        "iterative_peel_conflict_count": diagnostics.get("iterative_peel_conflict_count", 0),
+        "iterative_peel_recovered_positions": _csv_sequence(
+            diagnostics.get("iterative_peel_recovered_positions", ())
+        ),
+        "iterative_peel_recovered_count_by_step": _csv_sequence(
+            diagnostics.get("iterative_peel_recovered_count_by_step", ())
+        ),
         "parity_candidate_rejections": case.parity_filter_diagnostics.get(
             "parity_candidate_rejections",
             0,
@@ -948,6 +1101,27 @@ def _validate_hybrid_mode(hybrid_mode: str) -> None:
         raise ValueError(f"hybrid_mode must be one of: {modes}")
 
 
+def _validate_iterative_peel_decoder_config(config: DiffusionDecodingConfig) -> None:
+    if config.editable_update_mode != EDITABLE_UPDATE_COMMIT_ONCE:
+        raise ValueError("hybrid_mode='iterative_peel' requires editable_update_mode='commit_once'")
+    if config.hash_constraint_schedule != HASH_CONSTRAINT_ALWAYS:
+        raise ValueError("hybrid_mode='iterative_peel' requires hash_constraint_schedule='always'")
+
+
+def _known_tokens_from_decoder_state(
+    *,
+    input_ids: Sequence[int],
+    plan: ReconstructionPlan,
+    prompt_length: int,
+    mask_token_id: int,
+) -> dict[int, int]:
+    return {
+        entry.position: int(input_ids[prompt_length + entry.position])
+        for entry in plan.entries
+        if int(input_ids[prompt_length + entry.position]) != mask_token_id
+    }
+
+
 def _merge_protected_source_and_parity_packets(
     *,
     encoded: XorParityEncoded,
@@ -1056,6 +1230,7 @@ def _decoding_result_with_hybrid_diagnostics(
     initial_peel: XorPeelResult,
     final_audit: XorAuditResult,
     parity_filter_diagnostics: dict[str, Any],
+    iterative_peel_diagnostics: dict[str, Any],
     parity_equation_count: int,
     parity_received_equation_count: int,
 ) -> DecodingResult:
@@ -1071,6 +1246,7 @@ def _decoding_result_with_hybrid_diagnostics(
             "parity_equations_satisfied": final_audit.satisfied_count,
             "parity_equations_violated": final_audit.violated_count,
             **parity_filter_diagnostics,
+            **iterative_peel_diagnostics,
         }
     )
     return DecodingResult(
@@ -1110,6 +1286,29 @@ def _empty_filter_diagnostics() -> dict[str, Any]:
         "parity_filter_fallback_count": 0,
         "parity_filter_fallback_enabled": False,
     }
+
+
+def _empty_iterative_peel_diagnostics() -> dict[str, Any]:
+    return {
+        "iterative_peel_enabled": False,
+        "iterative_peel_passes": 0,
+        "iterative_peel_recovered_count": 0,
+        "iterative_peel_recovered_positions": (),
+        "iterative_peel_recovered_count_by_step": (),
+        "iterative_peel_conflict_count": 0,
+        "iterative_peel_hash_conflict_count": 0,
+        "iterative_peel_special_token_conflict_count": 0,
+        "iterative_peel_vocab_conflict_count": 0,
+        "iterative_peel_conflicts": (),
+    }
+
+
+def _csv_sequence(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(list(value), separators=(",", ":"))
 
 
 def _sample_generation_info(dataset_info: dict[str, Any] | None) -> dict[str, Any]:

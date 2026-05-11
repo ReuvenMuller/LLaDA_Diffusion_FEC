@@ -40,6 +40,7 @@ from diffusion_fec.decoding.llada_diffusion import (
 from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
 from diffusion_fec.experiments.hybrid_eval import (
     DEFAULT_XOR_OVERHEAD_BITS_PER_TOKEN,
+    HYBRID_MODE_ITERATIVE_PEEL,
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
 )
@@ -346,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--hybrid-mode",
         default=HYBRID_MODE_PARITY_FILTER,
-        choices=[HYBRID_MODE_PRE_PEEL_ONLY, HYBRID_MODE_PARITY_FILTER],
+        choices=[HYBRID_MODE_PRE_PEEL_ONLY, HYBRID_MODE_PARITY_FILTER, HYBRID_MODE_ITERATIVE_PEEL],
     )
     parser.add_argument(
         "--xor-overhead-bits-per-token",

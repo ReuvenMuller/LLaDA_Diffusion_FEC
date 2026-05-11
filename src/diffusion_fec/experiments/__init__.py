@@ -15,6 +15,7 @@ from diffusion_fec.experiments.llada_micro_eval import (
     run_real_llada_micro_eval,
 )
 from diffusion_fec.experiments.hybrid_eval import (
+    HYBRID_MODE_ITERATIVE_PEEL,
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
     run_hybrid_xor_hash_micro_eval,
@@ -31,6 +32,7 @@ from diffusion_fec.experiments.sweep import (
 __all__ = [
     "MICRO_EVAL_MODEL_HASH",
     "MICRO_EVAL_MODEL_ONLY",
+    "HYBRID_MODE_ITERATIVE_PEEL",
     "HYBRID_MODE_PARITY_FILTER",
     "HYBRID_MODE_PRE_PEEL_ONLY",
     "RealLLaDAMicroEvalUnavailable",

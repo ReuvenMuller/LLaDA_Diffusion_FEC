@@ -187,6 +187,7 @@ def decode_masked_diffusion(
     token_hash_map: TokenHashMap | None = None,
     prompt_token_ids: Sequence[int] | None = None,
     candidate_filter: object | None = None,
+    post_commit_hook: object | None = None,
 ) -> DecodingResult:
     """Decode erased positions with hard fixed-token and hash constraints."""
 
@@ -198,6 +199,14 @@ def decode_masked_diffusion(
         raise ValueError("token_hash_map is required for hash-guided reconstruction plans")
     if token_hash_map is not None and token_hash_map.vocab_size != config.vocab_size:
         raise ValueError("token_hash_map vocab_size must match decoding config vocab_size")
+    post_commit_hook_available = callable(post_commit_hook)
+    if post_commit_hook is not None and not post_commit_hook_available:
+        raise TypeError("post_commit_hook must be callable when set")
+    if (
+        post_commit_hook_available
+        and config.editable_update_mode != EDITABLE_UPDATE_COMMIT_ONCE
+    ):
+        raise ValueError("post_commit_hook is only supported for commit_once decoding")
 
     start_time = perf_counter()
     masks = build_constraint_masks(plan)
@@ -255,6 +264,11 @@ def decode_masked_diffusion(
                 "candidate_filter_calls": 0,
                 "candidate_filter_rejections": 0,
                 "candidate_filter_diagnostics": _candidate_filter_diagnostics(candidate_filter),
+                "post_commit_hook_available": post_commit_hook_available,
+                "post_commit_hook_used": False,
+                "post_commit_hook_calls": 0,
+                "post_commit_fixed_positions_per_step": [],
+                "post_commit_hook_diagnostics": _post_commit_hook_diagnostics(post_commit_hook),
                 "editable_update_mode": config.editable_update_mode,
                 "hash_constraint_schedule": config.hash_constraint_schedule,
                 "hash_enforced_steps": [],
@@ -272,6 +286,8 @@ def decode_masked_diffusion(
     hash_enforced_steps: list[int] = []
     hash_relaxed_steps: list[int] = []
     updated_editable_positions_per_step: list[int] = []
+    post_commit_hook_calls = 0
+    post_commit_fixed_positions_per_step: list[int] = []
 
     if config.editable_update_mode == EDITABLE_UPDATE_COMMIT_ONCE:
         for step in range(config.steps):
@@ -360,7 +376,41 @@ def decode_masked_diffusion(
                     step_fallback_positions.append(proposal.target_position)
                     fallback_reasons[proposal.target_position] = "hash_bucket_empty_after_bans"
 
-            updated_editable_positions_per_step.append(len(committed))
+            post_commit_stats: list[ConfidenceStat] = []
+            if post_commit_hook_available:
+                post_commit_hook_calls += 1
+                fixed_by_hook = _apply_post_commit_hook(
+                    post_commit_hook=post_commit_hook,
+                    x=x,
+                    plan=plan,
+                    config=config,
+                    prompt_length=prompt_length,
+                    fixed_token_ids=fixed_token_ids,
+                    step=step,
+                    committed_positions=tuple(
+                        proposal.target_position
+                        for proposal in committed
+                    ),
+                )
+                post_commit_fixed_positions_per_step.append(len(fixed_by_hook))
+                for target_position, token_id in fixed_by_hook.items():
+                    entry = plan.entries[target_position]
+                    stat = editable_confidence_stat(
+                        entry,
+                        selected_token_id=token_id,
+                        top1_probability=1.0,
+                        top2_probability=0.0,
+                        candidate_count=1,
+                        commit_step=step,
+                    )
+                    stats_by_position[target_position] = stat
+                    post_commit_stats.append(stat)
+            else:
+                post_commit_fixed_positions_per_step.append(0)
+
+            updated_editable_positions_per_step.append(
+                len(committed) + len(post_commit_stats)
+            )
             step_restored = _restore_fixed_tokens(x, fixed_token_ids)
             restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
             still_masked_count = len(
@@ -370,7 +420,7 @@ def decode_masked_diffusion(
                 step_summary(
                     step=step,
                     still_masked_count=still_masked_count,
-                    committed_stats=committed_stats,
+                    committed_stats=[*committed_stats, *post_commit_stats],
                     fallback_positions=step_fallback_positions,
                     restored_fixed_positions=[
                         position - prompt_length for position in step_restored if position >= prompt_length
@@ -461,6 +511,7 @@ def decode_masked_diffusion(
                     fallback_reasons[proposal.target_position] = "hash_bucket_empty_after_bans"
 
             updated_editable_positions_per_step.append(len(proposals))
+            post_commit_fixed_positions_per_step.append(0)
             step_restored = _restore_fixed_tokens(x, fixed_token_ids)
             restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
             still_masked_count = len(
@@ -507,6 +558,7 @@ def decode_masked_diffusion(
     reconstructed_tokens = tuple(x[prompt_length:])
     ordered_stats = tuple(stats_by_position[position] for position in range(plan.total_tokens))
     candidate_filter_diagnostics = _candidate_filter_diagnostics(candidate_filter)
+    post_commit_hook_diagnostics = _post_commit_hook_diagnostics(post_commit_hook)
     candidate_filter_rejections = int(
         candidate_filter_diagnostics.get(
             "parity_candidate_rejections",
@@ -539,6 +591,11 @@ def decode_masked_diffusion(
             "candidate_filter_calls": candidate_filter_calls,
             "candidate_filter_rejections": candidate_filter_rejections,
             "candidate_filter_diagnostics": candidate_filter_diagnostics,
+            "post_commit_hook_available": post_commit_hook_available,
+            "post_commit_hook_used": post_commit_hook_calls > 0,
+            "post_commit_hook_calls": post_commit_hook_calls,
+            "post_commit_fixed_positions_per_step": tuple(post_commit_fixed_positions_per_step),
+            "post_commit_hook_diagnostics": post_commit_hook_diagnostics,
             "editable_update_mode": config.editable_update_mode,
             "hash_constraint_schedule": config.hash_constraint_schedule,
             "hash_enforced_steps": tuple(hash_enforced_steps),
@@ -818,6 +875,80 @@ def _candidate_filter_diagnostics(candidate_filter: object | None) -> dict[str, 
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _post_commit_hook_diagnostics(post_commit_hook: object | None) -> dict[str, Any]:
+    if post_commit_hook is None:
+        return {}
+    diagnostics = getattr(post_commit_hook, "diagnostics", None)
+    if callable(diagnostics):
+        value = diagnostics()
+        if not isinstance(value, dict):
+            raise TypeError("post_commit_hook.diagnostics() must return a dict")
+        return dict(value)
+    value = getattr(post_commit_hook, "diagnostics", None)
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _apply_post_commit_hook(
+    *,
+    post_commit_hook: object,
+    x: list[int],
+    plan: ReconstructionPlan,
+    config: DiffusionDecodingConfig,
+    prompt_length: int,
+    fixed_token_ids: dict[int, int],
+    step: int,
+    committed_positions: tuple[int, ...],
+) -> dict[int, int]:
+    if not callable(post_commit_hook):
+        raise TypeError("post_commit_hook must be callable")
+    result = post_commit_hook(
+        input_ids=tuple(x),
+        step=step,
+        prompt_length=prompt_length,
+        committed_positions=committed_positions,
+        fixed_token_ids=dict(fixed_token_ids),
+        plan=plan,
+        config=config,
+    )
+    if result is None:
+        return {}
+    fixed_tokens = result
+    if isinstance(result, dict) and (
+        "fixed_tokens" in result
+        or "recovered_tokens" in result
+    ):
+        fixed_tokens = result.get("fixed_tokens", result.get("recovered_tokens"))
+    if fixed_tokens is None:
+        return {}
+    if not isinstance(fixed_tokens, dict):
+        fixed_tokens = dict(fixed_tokens)
+
+    applied: dict[int, int] = {}
+    for raw_position, raw_token_id in fixed_tokens.items():
+        target_position = int(raw_position)
+        token_id = int(raw_token_id)
+        if target_position < 0 or target_position >= plan.total_tokens:
+            raise ValueError("post_commit_hook returned a target position outside the plan")
+        full_position = prompt_length + target_position
+        existing_fixed = fixed_token_ids.get(full_position)
+        if existing_fixed is not None and existing_fixed != token_id:
+            raise RuntimeError("post_commit_hook attempted to change a fixed token")
+        if x[full_position] != config.mask_token_id:
+            if x[full_position] == token_id:
+                fixed_token_ids[full_position] = token_id
+                continue
+            raise RuntimeError("post_commit_hook attempted to overwrite a committed token")
+        config._validate_token_id(token_id, "post_commit_hook token_id")
+        if token_id in config.special_token_ids:
+            raise RuntimeError("post_commit_hook returned a banned or special token")
+        x[full_position] = token_id
+        fixed_token_ids[full_position] = token_id
+        applied[target_position] = token_id
+    return applied
 
 
 def _candidate_token_ids(

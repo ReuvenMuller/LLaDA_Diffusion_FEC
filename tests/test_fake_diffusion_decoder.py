@@ -553,6 +553,79 @@ def test_all_editable_positions_fill_and_commit_steps_are_recorded() -> None:
     assert [stat.commit_step for stat in result.confidence_stats] == [0, 0, 1, 1]
 
 
+def test_post_commit_hook_can_fix_new_tokens_after_model_commit() -> None:
+    plan = build_reconstruction_plan(total_tokens=2, received_packets=[])
+    model = StepwiseProposalModel(choices_by_step={(0, 0): 10, (1, 1): 99})
+    hook_calls = []
+
+    def post_commit_hook(
+        *,
+        input_ids,
+        step,
+        prompt_length,
+        committed_positions,
+        fixed_token_ids,
+        plan,
+        config,
+    ):
+        hook_calls.append(
+            {
+                "step": step,
+                "input_ids": tuple(input_ids),
+                "committed_positions": tuple(committed_positions),
+            }
+        )
+        if step == 0 and input_ids[prompt_length] == 10:
+            return {"fixed_tokens": {1: 11}}
+        return {"fixed_tokens": {}}
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=128,
+            steps=2,
+            block_length=2,
+        ),
+        post_commit_hook=post_commit_hook,
+    )
+
+    assert result.reconstructed_tokens == (10, 11)
+    assert len(model.proposal_calls) == 2
+    assert {call["position"] for call in model.proposal_calls} == {0, 1}
+    assert hook_calls[0]["committed_positions"] == (0,)
+    assert result.step_summaries[0].committed_count == 2
+    assert result.diagnostics["post_commit_hook_used"] is True
+    assert result.diagnostics["post_commit_fixed_positions_per_step"] == (1,)
+    assert result.diagnostics["updated_editable_positions_per_step"] == (2,)
+
+
+def test_post_commit_hook_rejects_overwriting_committed_tokens() -> None:
+    plan = build_reconstruction_plan(total_tokens=1, received_packets=[])
+    model = StepwiseProposalModel(choices_by_step={(0, 0): 10})
+
+    def post_commit_hook(**kwargs):
+        return {"fixed_tokens": {0: 11}}
+
+    with pytest.raises(RuntimeError, match="overwrite a committed token"):
+        decode_masked_diffusion(
+            model=model,
+            plan=plan,
+            config=DiffusionDecodingConfig(
+                mask_token_id=0,
+                eos_token_id=1,
+                pad_token_id=2,
+                vocab_size=128,
+                steps=1,
+                block_length=1,
+            ),
+            post_commit_hook=post_commit_hook,
+        )
+
+
 def test_empty_hash_bucket_falls_back_and_logs_position() -> None:
     token_hash = TokenHashMap(
         hash_bits=4,

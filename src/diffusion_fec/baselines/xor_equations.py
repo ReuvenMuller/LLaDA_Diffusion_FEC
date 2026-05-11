@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -190,6 +190,8 @@ def peel_xor_equations(
     known_tokens: Mapping[int, int],
     hash_metadata: Mapping[int, int] | None = None,
     token_hash_map: TokenHashMap | None = None,
+    vocab_size: int | None = None,
+    banned_token_ids: Collection[int] | None = None,
 ) -> XorPeelResult:
     """Iteratively solve equations with exactly one unknown token position."""
 
@@ -197,6 +199,7 @@ def peel_xor_equations(
     recovered: dict[int, int] = {}
     conflicts: list[XorPeelConflict] = []
     hash_metadata = dict(hash_metadata or {})
+    banned = {int(token_id) for token_id in (banned_token_ids or ())}
     iteration_count = 0
 
     while True:
@@ -215,6 +218,17 @@ def peel_xor_equations(
 
             position = unknown_positions[0]
             solved_token_id = accumulator
+            conflict = _legality_conflict(
+                equation=equation,
+                position=position,
+                solved_token_id=solved_token_id,
+                vocab_size=vocab_size,
+                banned_token_ids=banned,
+            )
+            if conflict is not None:
+                if conflict not in conflicts:
+                    conflicts.append(conflict)
+                continue
             conflict = _hash_conflict(
                 equation=equation,
                 position=position,
@@ -445,6 +459,38 @@ def _hash_conflict(
             reason="parity_hash_conflict",
             expected_hash_value=expected_hash,
             solved_hash_value=solved_hash,
+        )
+    return None
+
+
+def _legality_conflict(
+    *,
+    equation: XorTokenEquation,
+    position: int,
+    solved_token_id: int,
+    vocab_size: int | None,
+    banned_token_ids: Collection[int],
+) -> XorPeelConflict | None:
+    if solved_token_id < 0:
+        return XorPeelConflict(
+            equation_id=equation.equation_id,
+            position=position,
+            solved_token_id=solved_token_id,
+            reason="solved_token_negative",
+        )
+    if vocab_size is not None and solved_token_id >= vocab_size:
+        return XorPeelConflict(
+            equation_id=equation.equation_id,
+            position=position,
+            solved_token_id=solved_token_id,
+            reason="solved_token_outside_vocab",
+        )
+    if solved_token_id in banned_token_ids:
+        return XorPeelConflict(
+            equation_id=equation.equation_id,
+            position=position,
+            solved_token_id=solved_token_id,
+            reason="solved_token_is_banned",
         )
     return None
 

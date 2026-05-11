@@ -328,6 +328,7 @@ Two hybrid modes are available:
 ```text
 pre_peel_only
 parity_filter
+iterative_peel
 ```
 
 `pre_peel_only` transmits lookback-1 hash metadata on data packets, transmits
@@ -341,6 +342,14 @@ parity filter rejects candidates only when a received parity equation is fully
 determined by known/committed tokens plus the current candidate. If filtering
 empties the candidate set, the default is to fall back to the hash-filtered
 candidate set and log `parity_filter_fallback_count`.
+
+`iterative_peel` is the stronger cooperative hybrid mode. It does the initial
+peel, uses the parity candidate filter during LLaDA decoding, and after each
+`commit_once` decoder step reruns XOR peeling using received equations plus all
+currently known/committed tokens. Newly parity-solved tokens are promoted to
+fixed only after hash validation when metadata exists and vocab/special-token
+legality checks pass. This mode intentionally requires `commit_once + always`.
+It should be validated before sweeping alternative XOR layouts.
 
 Local fake/model-free smoke:
 

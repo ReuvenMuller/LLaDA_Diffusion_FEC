@@ -7,18 +7,52 @@ from artifact_helpers import (
     normalized_artifact_text,
 )
 from diffusion_fec.channels.packet_loss import CHANNEL_BURST, PacketLossChannelConfig
+from diffusion_fec.baselines.xor_equations import XorTokenEquation
+from diffusion_fec.baselines.xor_parity import XorParityConfig
 from diffusion_fec.coding.packetizer import (
     SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
     WIRE_INTERLEAVING_MATRIX,
     SourceLayoutConfig,
     WireInterleavingConfig,
 )
+from diffusion_fec.coding.token_hash import build_token_hash_map
+from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
 from diffusion_fec.experiments.hybrid_eval import (
+    HYBRID_MODE_ITERATIVE_PEEL,
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
+    IterativeXorPeelHook,
+    run_hybrid_recovery_case,
     run_hybrid_xor_hash_micro_eval,
 )
 from diffusion_fec.experiments.runner import main as runner_main
+from diffusion_fec.types import TokenSample
+
+
+class PositionChoiceModel:
+    def __init__(self, choices):
+        self.choices = dict(choices)
+        self.proposal_calls = []
+
+    def propose_token(
+        self,
+        *,
+        position,
+        full_position,
+        candidate_token_ids,
+        input_ids,
+        step,
+    ):
+        self.proposal_calls.append((position, step, tuple(input_ids)))
+        preferred = self.choices.get((position, step), self.choices.get(position, 3))
+        token_id = preferred if preferred in candidate_token_ids else candidate_token_ids[0]
+        return {"token_id": token_id, "top1_probability": 1.0, "top2_probability": 0.0}
+
+    def forward(self, input_ids, attention_mask=None):
+        raise AssertionError("test model should use propose_token")
+
+    def decode(self, token_ids, skip_special_tokens=False):
+        return " ".join(str(token_id) for token_id in token_ids)
 
 
 def read_json(path):
@@ -36,6 +70,15 @@ def read_jsonl(path):
 def read_csv(path):
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def make_token_hash(vocab_size=64):
+    return build_token_hash_map(
+        vocab_size=vocab_size,
+        hash_bits=4,
+        decode_token=lambda token_id: f"token-{token_id}",
+        excluded_token_ids={0, 1, 2},
+    )
 
 
 def test_hybrid_micro_eval_writes_artifacts_and_overhead_fields(tmp_path) -> None:
@@ -105,6 +148,7 @@ def test_hybrid_pre_peel_mode_disables_candidate_filter(tmp_path) -> None:
     assert row["hybrid_mode"] == HYBRID_MODE_PRE_PEEL_ONLY
     assert row["parity_candidate_rejections"] == "0"
     assert event["case"]["parity_filter_diagnostics"]["parity_candidate_filter_calls"] == 0
+    assert row["iterative_peel_enabled"] == "False"
 
 
 def test_hybrid_initial_xor_peel_keeps_channel_loss_denominator(tmp_path) -> None:
@@ -135,6 +179,207 @@ def test_hybrid_initial_xor_peel_keeps_channel_loss_denominator(tmp_path) -> Non
     assert row["channel_lost_position_count"] == "2"
     assert event_case["channel_lost_positions"] == [0, 1]
     assert event_case["channel_lost_metrics"]["channel_lost_position_count"] == 2
+
+
+def test_hybrid_iterative_peel_writes_artifact_diagnostics(tmp_path) -> None:
+    output_dir = tmp_path / "hybrid_iterative"
+
+    run_hybrid_xor_hash_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        loss_rate=0.5,
+        seed=0,
+        tokens_per_packet=2,
+        hash_bits=4,
+        vocab_size=64,
+        steps=2,
+        hybrid_mode=HYBRID_MODE_ITERATIVE_PEEL,
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=1,
+        ),
+    )
+
+    row = read_csv(output_dir / "results.csv")[0]
+    event_case = read_jsonl(output_dir / "events.jsonl")[0]["case"]
+
+    assert row["hybrid_mode"] == HYBRID_MODE_ITERATIVE_PEEL
+    assert row["iterative_peel_enabled"] == "True"
+    assert "iterative_peel_recovered_count" in row
+    assert "iterative_peel_recovered_positions" in row
+    assert event_case["decoding_result"]["diagnostics"]["iterative_peel_enabled"] is True
+
+
+def test_iterative_peel_recovers_token_after_llada_commit_and_locks_it() -> None:
+    sample = TokenSample(
+        sample_id="sample-1",
+        text="fake",
+        token_ids=(10, 11, 12, 13),
+        tokenizer_name="fake-tokenizer",
+    )
+    token_hash = make_token_hash()
+    model = PositionChoiceModel(
+        {
+            (0, 0): 10,
+            (1, 1): 44,
+        }
+    )
+
+    case = run_hybrid_recovery_case(
+        sample=sample,
+        model=model,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=64,
+            steps=2,
+            block_length=1,
+        ),
+        tokens_per_packet=1,
+        token_hash_map=token_hash,
+        xor_config=XorParityConfig(data_packets_per_stripe=2),
+        source_layout=SourceLayoutConfig(),
+        wire_interleaving=WireInterleavingConfig(),
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=2,
+        ),
+        hybrid_mode=HYBRID_MODE_ITERATIVE_PEEL,
+        parity_filter_fallback=True,
+    )
+
+    diagnostics = case.decoding_result.diagnostics
+    assert case.initial_peel.recovered_count == 0
+    assert case.decoding_result.reconstructed_tokens == sample.token_ids
+    assert model.proposal_calls == [
+        (0, 0, (0, 0, 12, 13)),
+        (1, 0, (0, 0, 12, 13)),
+    ]
+    assert diagnostics["iterative_peel_enabled"] is True
+    assert diagnostics["iterative_peel_recovered_count"] == 1
+    assert diagnostics["iterative_peel_recovered_positions"] == (1,)
+    assert diagnostics["iterative_peel_recovered_count_by_step"] == (1,)
+    assert diagnostics["post_commit_fixed_positions_per_step"] == (1,)
+
+
+def test_iterative_peel_hash_mismatch_prevents_promotion() -> None:
+    token_hash = make_token_hash()
+    true_bucket = token_hash.bucket_for_token(11)
+    wrong_bucket = (true_bucket + 1) % 16
+    hook = IterativeXorPeelHook(
+        equations=[
+            XorTokenEquation(
+                equation_id="eq0",
+                parity_packet_wire_id=2,
+                stripe_id=0,
+                parity_offset=0,
+                positions=(0, 1),
+                parity_value=10 ^ 11,
+            )
+        ],
+        hash_metadata={1: wrong_bucket},
+        token_hash_map=token_hash,
+        mask_token_id=0,
+        vocab_size=64,
+        banned_token_ids={0, 1, 2},
+    )
+    result = hook(
+        input_ids=(10, 0),
+        step=0,
+        prompt_length=0,
+        committed_positions=(0,),
+        fixed_token_ids={},
+        plan=_two_token_empty_plan(),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+
+    assert result["fixed_tokens"] == {}
+    assert hook.diagnostics()["iterative_peel_recovered_count"] == 0
+    assert hook.diagnostics()["iterative_peel_hash_conflict_count"] == 1
+
+
+def test_iterative_peel_rejects_special_token_solution() -> None:
+    token_hash = make_token_hash()
+    hook = IterativeXorPeelHook(
+        equations=[
+            XorTokenEquation(
+                equation_id="eq0",
+                parity_packet_wire_id=2,
+                stripe_id=0,
+                parity_offset=0,
+                positions=(0, 1),
+                parity_value=10 ^ 0,
+            )
+        ],
+        hash_metadata={},
+        token_hash_map=token_hash,
+        mask_token_id=0,
+        vocab_size=64,
+        banned_token_ids={0, 1, 2},
+    )
+
+    result = hook(
+        input_ids=(10, 0),
+        step=0,
+        prompt_length=0,
+        committed_positions=(0,),
+        fixed_token_ids={},
+        plan=_two_token_empty_plan(),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+
+    assert result["fixed_tokens"] == {}
+    assert hook.diagnostics()["iterative_peel_special_token_conflict_count"] == 1
+
+
+def test_iterative_peel_requires_validated_commit_once_hash_schedule() -> None:
+    sample = TokenSample(
+        sample_id="sample-1",
+        text="fake",
+        token_ids=(10, 11),
+        tokenizer_name="fake-tokenizer",
+    )
+
+    try_config = DiffusionDecodingConfig(
+        mask_token_id=0,
+        eos_token_id=1,
+        pad_token_id=2,
+        vocab_size=64,
+        steps=2,
+        block_length=1,
+        editable_update_mode="resample_each_step",
+        hash_constraint_schedule="always",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="iterative_peel.*commit_once"):
+        run_hybrid_recovery_case(
+            sample=sample,
+            model=PositionChoiceModel({}),
+            config=try_config,
+            tokens_per_packet=1,
+            token_hash_map=make_token_hash(),
+            xor_config=XorParityConfig(data_packets_per_stripe=2),
+            source_layout=SourceLayoutConfig(),
+            wire_interleaving=WireInterleavingConfig(),
+            channel_config=PacketLossChannelConfig(
+                mode=CHANNEL_BURST,
+                burst_start_wire_id=0,
+                burst_length=1,
+            ),
+            hybrid_mode=HYBRID_MODE_ITERATIVE_PEEL,
+            parity_filter_fallback=True,
+        )
+
+
+def _two_token_empty_plan():
+    from diffusion_fec.coding.packetizer import build_reconstruction_plan
+
+    return build_reconstruction_plan(total_tokens=2, received_packets=[])
 
 
 def test_hybrid_burst_channel_output_is_deterministic(tmp_path) -> None:

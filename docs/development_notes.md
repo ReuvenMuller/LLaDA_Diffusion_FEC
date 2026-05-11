@@ -258,11 +258,19 @@ Hybrid modes:
 - `parity_filter`: also filter LLaDA candidates when received parity equations
   are locally determined. Empty parity-filtered candidate sets fall back to
   hash-only candidates by default and log `parity_filter_fallback_count`.
+- `iterative_peel`: performs the initial peel, applies the parity candidate
+  filter during LLaDA decoding, then reruns XOR peeling after every LLaDA commit
+  step. Newly solved tokens are hash-validated when metadata exists, checked
+  against vocab/special-token legality, promoted to fixed, and cannot be
+  overwritten by later decoder steps. This first implementation is intentionally
+  limited to `commit_once + always`.
 
 Hybrid result rows include `total_overhead_ratio`, which is the sum of
 token-equivalent hash metadata overhead and XOR repair-token overhead. Compare
 hybrid rows against hash-only and XOR-only rows with this field, not the nominal
 hash/XOR labels.
+Rows also include `iterative_peel_*` diagnostics for the cooperative parity
+repair path.
 
 LT/fountain baseline micro-eval:
 
