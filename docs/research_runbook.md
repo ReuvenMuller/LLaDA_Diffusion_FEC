@@ -413,20 +413,23 @@ LLaDA hash profiles, `steps=8`, `tokens_per_packet=4`, `seed=0`,
 `wire_interleaving_span=4`. Both IID `loss_rate=0.5` and deterministic burst
 loss with `burst_start_wire_id=0`, `burst_length=16` were run.
 
-| strategy | channel | lost recovery | edit distance | total overhead | latency sec | parity recovered | parity violations |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| XOR-only hash4 budget | IID | 0.0000 | 61.2 | 0.2500 | 0.0000 |  |  |
-| XOR-only hash8 budget | IID | 0.0000 | 51.6 | 0.5000 | 0.0000 |  |  |
-| LLaDA hash4 | IID | 0.7173 | 20.7 | 0.2279 | 7.7662 |  |  |
-| LLaDA hash8 | IID | 0.7901 | 15.4 | 0.4559 | 7.3250 |  |  |
-| Hybrid hash4+xor4 pre-peel | IID | 0.7025 | 19.0 | 0.4779 | 6.7901 | 4.0 | 4.9 |
-| Hybrid hash4+xor4 parity-filter | IID | 0.7402 | 16.9 | 0.4779 | 19.2920 | 4.0 | 1.9 |
-| XOR-only hash4 budget | burst | 0.0000 | 48.0 | 0.2500 | 0.0000 |  |  |
-| XOR-only hash8 budget | burst | 0.0000 | 32.0 | 0.5000 | 0.0000 |  |  |
-| LLaDA hash4 | burst | 0.7938 | 13.2 | 0.2279 | 6.9070 |  |  |
-| LLaDA hash8 | burst | 0.8563 | 9.2 | 0.4559 | 7.2438 |  |  |
-| Hybrid hash4+xor4 pre-peel | burst | 0.8042 | 9.4 | 0.4779 | 3.5525 | 8.0 | 4.2 |
-| Hybrid hash4+xor4 parity-filter | burst | 0.8604 | 6.7 | 0.4779 | 12.3244 | 8.0 | 1.0 |
+The run was reanalysed after adding `channel_lost_position_recovery_rate`.
+Corrected mean validation results are:
+
+| strategy | channel | channel recovery | legacy plan recovery | edit distance | total overhead | latency sec | parity recovered | parity violations |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| XOR-only hash4 budget | IID | 0.0709 | 0.0000 | 61.2 | 0.2500 | 0.0000 |  |  |
+| XOR-only hash8 budget | IID | 0.2244 | 0.0000 | 51.6 | 0.5000 | 0.0000 |  |  |
+| LLaDA hash4 | IID | 0.7173 | 0.7173 | 20.7 | 0.2279 | 7.7662 |  |  |
+| LLaDA hash8 | IID | 0.7901 | 0.7901 | 15.4 | 0.4559 | 7.3250 |  |  |
+| Hybrid hash4+xor4 pre-peel | IID | 0.7216 | 0.7025 | 19.0 | 0.4779 | 6.7901 | 4.0 | 4.9 |
+| Hybrid hash4+xor4 parity-filter | IID | 0.7556 | 0.7402 | 16.9 | 0.4779 | 19.2920 | 4.0 | 1.9 |
+| XOR-only hash4 budget | burst | 0.1429 | 0.0000 | 48.0 | 0.2500 | 0.0000 |  |  |
+| XOR-only hash8 budget | burst | 0.3333 | 0.0000 | 32.0 | 0.5000 | 0.0000 |  |  |
+| LLaDA hash4 | burst | 0.7938 | 0.7938 | 13.2 | 0.2279 | 6.9070 |  |  |
+| LLaDA hash8 | burst | 0.8563 | 0.8563 | 9.2 | 0.4559 | 7.2438 |  |  |
+| Hybrid hash4+xor4 pre-peel | burst | 0.8321 | 0.8042 | 9.4 | 0.4779 | 3.5525 | 8.0 | 4.2 |
+| Hybrid hash4+xor4 parity-filter | burst | 0.8804 | 0.8604 | 6.7 | 0.4779 | 12.3244 | 8.0 | 1.0 |
 
 On IID loss, the hybrid parity-filter run improved over hash4 but did not beat
 hash8 at similar overhead. Under burst loss, the hybrid parity-filter run
@@ -434,8 +437,14 @@ slightly beat hash8 on lost-token recovery and substantially improved token edit
 distance, at higher decode latency. This is promising validation evidence, not a
 final research claim.
 
-Note: this first hybrid table was produced before the channel-loss recovery
-metric was added. Reanalyse the run artifacts with:
+The channel-loss reanalysis artifacts are written under:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-hybrid-xor-20260511_162750/channel_reanalysis
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-hybrid-xor-20260511_162750/analysis_channel_loss
+```
+
+To re-run the correction:
 
 ```bash
 python -m diffusion_fec.analysis.channel_recovery \
@@ -447,8 +456,8 @@ python -m diffusion_fec.analysis.report \
   --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-hybrid-xor-20260511_162750/analysis_channel_loss
 ```
 
-After that, use `mean_channel_lost_position_recovery_rate` in summary tables for
-classical and hybrid comparison.
+Use `mean_channel_lost_position_recovery_rate` in summary tables for classical
+and hybrid comparison.
 
 ## Analysis Artifacts
 
