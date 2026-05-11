@@ -446,6 +446,32 @@ slightly beat hash8 on lost-token recovery and substantially improved token edit
 distance, at higher decode latency. This is promising validation evidence, not a
 final research claim.
 
+The stronger `iterative_peel` mode was validated on the same frozen setup after
+implementation:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-iterative-peel-20260511_213841
+```
+
+It used `hash4 + xor4`, `steps=8`, `commit_once + always`,
+`source_layout=round_robin_chunks`, `source_chunk_size=1`,
+`wire_interleaving=matrix`, and `wire_interleaving_span=4`. It reuses the same
+10-sample LLaDA-tokenized artifact and loaded hash profile directory as the
+earlier hybrid validation. Mean results:
+
+| strategy | channel | channel recovery | edit distance | normalized edit | exact match | known preserved | masks left | total overhead | latency sec | wall time sec | forwards | iterative recovered | hash conflicts | parity violations |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Hybrid hash4+xor4 iterative-peel | IID | 0.7561 | 16.7 | 0.1305 | 0.0000 | 1.0000 | 0.0 | 0.4779 | 13.1460 | 131.5964 | 8.0 | 8.5 | 0.4 | 1.3 |
+| Hybrid hash4+xor4 iterative-peel | burst | 0.8893 | 6.2 | 0.0484 | 0.0000 | 1.0000 | 0.0 | 0.4779 | 7.6727 | 76.8622 | 8.0 | 14.0 | 0.4 | 0.7 |
+
+Compared with the earlier `parity_filter` validation, iterative peeling made a
+small IID improvement (`0.7556` to `0.7561` recovery, edit distance `16.9` to
+`16.7`) and a clearer burst improvement (`0.8804` to `0.8893`, edit distance
+`6.7` to `6.2`). The burst cell remains above the hash8 validation cell
+(`0.8563` recovery, edit distance `9.2`) at similar total overhead. Treat this
+as decoder-design validation only; the next step is still controlled sweeps over
+XOR layouts and more samples before making research claims.
+
 The channel-loss reanalysis artifacts are written under:
 
 ```text
