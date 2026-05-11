@@ -80,6 +80,8 @@ def test_hybrid_micro_eval_writes_artifacts_and_overhead_fields(tmp_path) -> Non
     assert events[0]["event_type"] == "hybrid_xor_hash_micro_eval_case"
     assert events[0]["case"]["hybrid_mode"] == HYBRID_MODE_PARITY_FILTER
     assert events[0]["case"]["decoding_result"]["diagnostics"]["hybrid_mode"] == HYBRID_MODE_PARITY_FILTER
+    assert "channel_lost_position_recovery_rate" in rows[0]
+    assert "channel_lost_metrics" in events[0]["case"]
 
 
 def test_hybrid_pre_peel_mode_disables_candidate_filter(tmp_path) -> None:
@@ -103,6 +105,36 @@ def test_hybrid_pre_peel_mode_disables_candidate_filter(tmp_path) -> None:
     assert row["hybrid_mode"] == HYBRID_MODE_PRE_PEEL_ONLY
     assert row["parity_candidate_rejections"] == "0"
     assert event["case"]["parity_filter_diagnostics"]["parity_candidate_filter_calls"] == 0
+
+
+def test_hybrid_initial_xor_peel_keeps_channel_loss_denominator(tmp_path) -> None:
+    output_dir = tmp_path / "hybrid_channel_denominator"
+
+    run_hybrid_xor_hash_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        loss_rate=0.5,
+        seed=0,
+        tokens_per_packet=2,
+        hash_bits=4,
+        vocab_size=64,
+        steps=2,
+        hybrid_mode=HYBRID_MODE_PRE_PEEL_ONLY,
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=1,
+        ),
+    )
+
+    row = read_csv(output_dir / "results.csv")[0]
+    event_case = read_jsonl(output_dir / "events.jsonl")[0]["case"]
+
+    assert int(row["parity_peel_recovered_count"]) > 0
+    assert row["lost_position_count"] == "0"
+    assert row["channel_lost_position_count"] == "2"
+    assert event_case["channel_lost_positions"] == [0, 1]
+    assert event_case["channel_lost_metrics"]["channel_lost_position_count"] == 2
 
 
 def test_hybrid_burst_channel_output_is_deterministic(tmp_path) -> None:

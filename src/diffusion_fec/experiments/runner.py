@@ -1030,7 +1030,10 @@ def _result_row(
     protection_mode: str,
     hash_bits: int,
 ) -> dict[str, Any]:
-    metrics = case.metrics.to_dict()
+    metrics = {
+        **case.metrics.to_dict(),
+        **case.channel_lost_metrics.to_dict(),
+    }
     plan = case.reconstruction_plan
     diagnostics = case.decoding_result.diagnostics
     return {

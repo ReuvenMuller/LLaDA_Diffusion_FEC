@@ -7,6 +7,10 @@ from artifact_helpers import (
     normalized_artifact_text,
 )
 from diffusion_fec.channels.packet_loss import CHANNEL_BURST, PacketLossChannelConfig
+from diffusion_fec.coding.packetizer import (
+    SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
+    SourceLayoutConfig,
+)
 from diffusion_fec.experiments.classical_micro_eval import (
     run_lt_fountain_micro_eval,
     run_streaming_window_micro_eval,
@@ -62,6 +66,10 @@ def test_xor_parity_micro_eval_writes_artifacts_and_repairs_single_loss(tmp_path
     assert rows[0]["known_count"] == "8"
     assert rows[0]["unguided_count"] == "0"
     assert rows[0]["exact_match"] == "True"
+    assert rows[0]["lost_position_count"] == "0"
+    assert rows[0]["channel_lost_position_count"] == "2"
+    assert rows[0]["channel_lost_position_recovered_count"] == "2"
+    assert rows[0]["channel_lost_position_recovery_rate"] == "1.0"
     assert rows[0]["repair_packet_count"] == "2"
     assert rows[0]["repair_token_budget"] == "4"
     assert rows[0]["target_overhead_ratio"] == str(4 / 7)
@@ -70,6 +78,62 @@ def test_xor_parity_micro_eval_writes_artifacts_and_repairs_single_loss(tmp_path
     assert_row_has_run_timing(rows[0])
     assert events[0]["event_type"] == "xor_parity_micro_eval_case"
     assert events[0]["metrics"]["exact_match"] is True
+    assert events[0]["channel_lost_positions"] == [0, 1]
+    assert events[0]["metrics"]["channel_lost_position_count"] == 2
+
+
+def test_xor_parity_dropped_repair_packet_does_not_count_as_lost_source(tmp_path) -> None:
+    output_dir = tmp_path / "xor_dropped_repair"
+
+    run_xor_parity_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=2,
+        hash_bits=4,
+        vocab_size=128,
+        data_packets_per_stripe=2,
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=4,
+            burst_length=1,
+        ),
+    )
+
+    row = read_csv(output_dir / "results.csv")[0]
+    event = read_jsonl(output_dir / "events.jsonl")[0]
+
+    assert row["dropped_packet_count"] == "1"
+    assert row["channel_lost_position_count"] == "0"
+    assert row["channel_lost_position_recovery_rate"] == "1.0"
+    assert event["channel_lost_positions"] == []
+
+
+def test_xor_parity_channel_lost_positions_follow_token_interleaving(tmp_path) -> None:
+    output_dir = tmp_path / "xor_round_robin"
+
+    run_xor_parity_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=4,
+        hash_bits=4,
+        vocab_size=128,
+        data_packets_per_stripe=2,
+        source_layout=SourceLayoutConfig(
+            mode=SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS,
+            chunk_size=1,
+        ),
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=1,
+        ),
+    )
+
+    event = read_jsonl(output_dir / "events.jsonl")[0]
+    row = read_csv(output_dir / "results.csv")[0]
+
+    assert event["channel_lost_positions"] == [0, 2, 4, 6]
+    assert row["channel_lost_position_count"] == "4"
 
 
 def test_xor_parity_micro_eval_leaves_unrepaired_multi_loss_unguided(tmp_path) -> None:

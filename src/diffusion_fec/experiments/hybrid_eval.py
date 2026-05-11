@@ -78,7 +78,13 @@ from diffusion_fec.experiments.micro_eval import (
     FakeDeterministicMicroEvalModel,
     synthetic_sample,
 )
-from diffusion_fec.metrics.token_metrics import TokenMetrics, compute_token_metrics
+from diffusion_fec.metrics.token_metrics import (
+    ChannelLostPositionMetrics,
+    channel_lost_source_positions,
+    compute_channel_lost_position_metrics,
+    compute_token_metrics,
+    TokenMetrics,
+)
 from diffusion_fec.models.llada import LLADA_1_5_MODEL_ID, LLaDAAdapter
 from diffusion_fec.types import (
     DecodingResult,
@@ -129,6 +135,18 @@ class HybridRecoveryCase:
             mask_token_id=self.mask_token_id,
         )
 
+    @property
+    def channel_lost_positions(self) -> tuple[int, ...]:
+        return channel_lost_source_positions(self.loss_result.dropped)
+
+    @property
+    def channel_lost_metrics(self) -> ChannelLostPositionMetrics:
+        return compute_channel_lost_position_metrics(
+            original_tokens=self.sample.token_ids,
+            reconstructed_tokens=self.decoding_result.reconstructed_tokens,
+            channel_lost_positions=self.channel_lost_positions,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "sample": self.sample.to_dict(),
@@ -143,7 +161,9 @@ class HybridRecoveryCase:
             "hybrid_mode": self.hybrid_mode,
             "reconstruction_plan": self.reconstruction_plan.to_dict(),
             "decoding_result": self.decoding_result.to_dict(),
-            "metrics": self.metrics.to_dict(),
+            "channel_lost_positions": list(self.channel_lost_positions),
+            "channel_lost_metrics": self.channel_lost_metrics.to_dict(),
+            "metrics": {**self.metrics.to_dict(), **self.channel_lost_metrics.to_dict()},
         }
 
 
@@ -759,6 +779,7 @@ def _result_row(
         "parity_equations_satisfied": case.final_audit.satisfied_count,
         "parity_equations_violated": case.final_audit.violated_count,
         **case.metrics.to_dict(),
+        **case.channel_lost_metrics.to_dict(),
     }
 
 

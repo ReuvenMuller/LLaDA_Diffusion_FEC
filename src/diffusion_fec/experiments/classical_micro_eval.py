@@ -40,8 +40,14 @@ from diffusion_fec.experiments.micro_eval import (
     MICRO_EVAL_WARNING,
     synthetic_sample,
 )
-from diffusion_fec.metrics.token_metrics import TokenMetrics, compute_token_metrics
-from diffusion_fec.types import ReconstructionPlan, TokenSample
+from diffusion_fec.metrics.token_metrics import (
+    ChannelLostPositionMetrics,
+    channel_lost_source_positions,
+    compute_channel_lost_position_metrics,
+    compute_token_metrics,
+    TokenMetrics,
+)
+from diffusion_fec.types import Packet, ReconstructionPlan, TokenSample
 
 
 XOR_PARITY_MODEL_LABEL = "ClassicalXORParity"
@@ -158,6 +164,11 @@ def run_xor_parity_micro_eval(
             reconstruction_plan=plan,
             mask_token_id=DEFAULT_MASK_TOKEN_ID,
         )
+        channel_lost_positions, channel_metrics = _channel_lost_metrics(
+            sample=sample,
+            reconstructed_tokens=reconstructed_tokens,
+            dropped_packets=loss_result.dropped,
+        )
         case_id = f"case{case_index:04d}"
         result_rows.append(
             _result_row(
@@ -171,6 +182,7 @@ def run_xor_parity_micro_eval(
                 source_token_count=len(sample.token_ids),
                 plan=plan,
                 metrics=metrics,
+                channel_metrics=channel_metrics,
                 received_packet_count=len(loss_result.received),
                 dropped_packet_count=len(loss_result.dropped),
                 source_layout=source_layout,
@@ -195,7 +207,9 @@ def run_xor_parity_micro_eval(
                 "loss_result": loss_result.to_dict(),
                 "reconstruction_plan": plan.to_dict(),
                 "reconstructed_tokens": list(reconstructed_tokens),
-                "metrics": metrics.to_dict(),
+                "channel_lost_positions": list(channel_lost_positions),
+                "channel_lost_metrics": channel_metrics.to_dict(),
+                "metrics": {**metrics.to_dict(), **channel_metrics.to_dict()},
             }
         )
 
@@ -322,6 +336,11 @@ def run_lt_fountain_micro_eval(
             reconstruction_plan=plan,
             mask_token_id=DEFAULT_MASK_TOKEN_ID,
         )
+        channel_lost_positions, channel_metrics = _channel_lost_metrics(
+            sample=sample,
+            reconstructed_tokens=reconstructed_tokens,
+            dropped_packets=loss_result.dropped,
+        )
         case_id = f"case{case_index:04d}"
         result_rows.append(
             _result_row(
@@ -335,6 +354,7 @@ def run_lt_fountain_micro_eval(
                 source_token_count=len(sample.token_ids),
                 plan=plan,
                 metrics=metrics,
+                channel_metrics=channel_metrics,
                 received_packet_count=len(loss_result.received),
                 dropped_packet_count=len(loss_result.dropped),
                 source_layout=source_layout,
@@ -359,7 +379,9 @@ def run_lt_fountain_micro_eval(
                 "loss_result": loss_result.to_dict(),
                 "reconstruction_plan": plan.to_dict(),
                 "reconstructed_tokens": list(reconstructed_tokens),
-                "metrics": metrics.to_dict(),
+                "channel_lost_positions": list(channel_lost_positions),
+                "channel_lost_metrics": channel_metrics.to_dict(),
+                "metrics": {**metrics.to_dict(), **channel_metrics.to_dict()},
             }
         )
 
@@ -484,6 +506,11 @@ def run_streaming_window_micro_eval(
             reconstruction_plan=plan,
             mask_token_id=DEFAULT_MASK_TOKEN_ID,
         )
+        channel_lost_positions, channel_metrics = _channel_lost_metrics(
+            sample=sample,
+            reconstructed_tokens=reconstructed_tokens,
+            dropped_packets=loss_result.dropped,
+        )
         case_id = f"case{case_index:04d}"
         result_rows.append(
             _result_row(
@@ -497,6 +524,7 @@ def run_streaming_window_micro_eval(
                 source_token_count=len(sample.token_ids),
                 plan=plan,
                 metrics=metrics,
+                channel_metrics=channel_metrics,
                 received_packet_count=len(loss_result.received),
                 dropped_packet_count=len(loss_result.dropped),
                 source_layout=source_layout,
@@ -521,7 +549,9 @@ def run_streaming_window_micro_eval(
                 "loss_result": loss_result.to_dict(),
                 "reconstruction_plan": plan.to_dict(),
                 "reconstructed_tokens": list(reconstructed_tokens),
-                "metrics": metrics.to_dict(),
+                "channel_lost_positions": list(channel_lost_positions),
+                "channel_lost_metrics": channel_metrics.to_dict(),
+                "metrics": {**metrics.to_dict(), **channel_metrics.to_dict()},
             }
         )
 
@@ -608,6 +638,21 @@ def _tokens_from_plan(plan: ReconstructionPlan) -> tuple[int, ...]:
         entry.token_id if entry.token_id is not None else DEFAULT_MASK_TOKEN_ID
         for entry in plan.entries
     )
+
+
+def _channel_lost_metrics(
+    *,
+    sample: TokenSample,
+    reconstructed_tokens: Sequence[int],
+    dropped_packets: Sequence[Packet],
+) -> tuple[tuple[int, ...], ChannelLostPositionMetrics]:
+    lost_positions = channel_lost_source_positions(dropped_packets)
+    metrics = compute_channel_lost_position_metrics(
+        original_tokens=sample.token_ids,
+        reconstructed_tokens=reconstructed_tokens,
+        channel_lost_positions=lost_positions,
+    )
+    return lost_positions, metrics
 
 
 def _run_id(
@@ -864,6 +909,7 @@ def _result_row(
     source_token_count: int,
     plan: ReconstructionPlan,
     metrics: TokenMetrics,
+    channel_metrics: ChannelLostPositionMetrics,
     received_packet_count: int,
     dropped_packet_count: int,
     source_layout: SourceLayoutConfig,
@@ -925,4 +971,5 @@ def _result_row(
         "decoder_steps": 0,
         "model_forward_calls": 0,
         **metrics.to_dict(),
+        **channel_metrics.to_dict(),
     }

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from diffusion_fec.types import ReconstructionPlan, STATE_MISSING, STATE_UNGUIDED
+from diffusion_fec.types import Packet, ReconstructionPlan, STATE_MISSING, STATE_UNGUIDED
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,22 @@ class TokenMetrics:
             "remaining_mask_token_count": self.remaining_mask_token_count,
             "original_token_count": self.original_token_count,
             "reconstructed_token_count": self.reconstructed_token_count,
+        }
+
+
+@dataclass(frozen=True)
+class ChannelLostPositionMetrics:
+    """Recovery metrics over positions originally erased by the channel."""
+
+    channel_lost_position_count: int
+    channel_lost_position_recovered_count: int
+    channel_lost_position_recovery_rate: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "channel_lost_position_count": self.channel_lost_position_count,
+            "channel_lost_position_recovered_count": self.channel_lost_position_recovered_count,
+            "channel_lost_position_recovery_rate": self.channel_lost_position_recovery_rate,
         }
 
 
@@ -93,6 +109,57 @@ def compute_token_metrics(
     )
 
 
+def channel_lost_source_positions(
+    dropped_packets: Sequence[Packet | Mapping[str, Any]],
+    *,
+    source_packet_kinds: Sequence[str] = ("data",),
+) -> tuple[int, ...]:
+    """Return sorted source-token positions from packets erased by the channel.
+
+    Repair/parity packets are intentionally ignored. The returned denominator is
+    independent of later XOR peeling or plan promotion.
+    """
+
+    source_kinds = {str(kind) for kind in source_packet_kinds}
+    lost_positions: set[int] = set()
+    for packet in dropped_packets:
+        if _packet_kind(packet) not in source_kinds:
+            continue
+        positions = _packet_token_positions(packet)
+        if positions is None:
+            raise ValueError("dropped source packet is missing token_positions")
+        for position in positions:
+            position = int(position)
+            if position < 0:
+                raise ValueError("dropped source packet token_positions must be non-negative")
+            lost_positions.add(position)
+    return tuple(sorted(lost_positions))
+
+
+def compute_channel_lost_position_metrics(
+    *,
+    original_tokens: Sequence[int],
+    reconstructed_tokens: Sequence[int],
+    channel_lost_positions: Sequence[int],
+) -> ChannelLostPositionMetrics:
+    """Score reconstructed tokens against a fixed channel-lost position set."""
+
+    lost_positions = _normalized_positions(channel_lost_positions)
+    recovered_count = sum(
+        1
+        for position in lost_positions
+        if position < len(original_tokens)
+        and position < len(reconstructed_tokens)
+        and original_tokens[position] == reconstructed_tokens[position]
+    )
+    recovery_rate = 1.0 if not lost_positions else recovered_count / len(lost_positions)
+    return ChannelLostPositionMetrics(
+        channel_lost_position_count=len(lost_positions),
+        channel_lost_position_recovered_count=recovered_count,
+        channel_lost_position_recovery_rate=recovery_rate,
+    )
+
+
 def token_edit_distance(left: Sequence[int], right: Sequence[int]) -> int:
     """Compute Levenshtein edit distance over token IDs."""
 
@@ -130,3 +197,28 @@ def _lost_positions(plan: ReconstructionPlan | None) -> tuple[int, ...]:
         for entry in plan.entries
         if entry.state in {STATE_MISSING, STATE_UNGUIDED}
     )
+
+
+def _packet_kind(packet: Packet | Mapping[str, Any]) -> str:
+    if isinstance(packet, Mapping):
+        return str(packet.get("kind", ""))
+    return str(packet.kind)
+
+
+def _packet_token_positions(packet: Packet | Mapping[str, Any]) -> Sequence[int] | None:
+    if isinstance(packet, Mapping):
+        positions = packet.get("token_positions")
+        if positions is None:
+            return None
+        return tuple(int(position) for position in positions)
+    return packet.token_positions
+
+
+def _normalized_positions(positions: Sequence[int]) -> tuple[int, ...]:
+    normalized: set[int] = set()
+    for position in positions:
+        position = int(position)
+        if position < 0:
+            raise ValueError("channel_lost_positions must be non-negative")
+        normalized.add(position)
+    return tuple(sorted(normalized))

@@ -1,5 +1,11 @@
-from diffusion_fec.metrics.token_metrics import compute_token_metrics, token_edit_distance
+from diffusion_fec.metrics.token_metrics import (
+    channel_lost_source_positions,
+    compute_channel_lost_position_metrics,
+    compute_token_metrics,
+    token_edit_distance,
+)
 from diffusion_fec.types import (
+    Packet,
     ReconstructionEntry,
     ReconstructionPlan,
     STATE_KNOWN,
@@ -117,3 +123,37 @@ def test_no_lost_positions_are_vacuously_recovered() -> None:
     assert metrics.lost_position_count == 0
     assert metrics.lost_position_recovery_rate == 1.0
     assert metrics.to_dict()["exact_match"] is True
+
+
+def test_channel_lost_source_positions_ignore_dropped_repair_packets() -> None:
+    dropped = [
+        Packet(
+            source_id="sample",
+            wire_id=2,
+            kind="parity",
+            token_ids=(99, 98),
+            token_positions=(0, 1),
+        ),
+        Packet(
+            source_id="sample",
+            wire_id=0,
+            kind="data",
+            token_ids=(10, 11),
+            token_positions=(4, 1),
+        ),
+    ]
+
+    assert channel_lost_source_positions(dropped) == (1, 4)
+
+
+def test_channel_lost_position_metrics_use_fixed_channel_denominator() -> None:
+    metrics = compute_channel_lost_position_metrics(
+        original_tokens=[10, 11, 12, 13],
+        reconstructed_tokens=[10, 99, 12, 13],
+        channel_lost_positions=[1, 2],
+    )
+
+    assert metrics.channel_lost_position_count == 2
+    assert metrics.channel_lost_position_recovered_count == 1
+    assert metrics.channel_lost_position_recovery_rate == 0.5
+    assert metrics.to_dict()["channel_lost_position_count"] == 2

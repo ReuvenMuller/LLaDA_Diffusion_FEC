@@ -36,6 +36,7 @@ SUMMARY_FIELDS = (
     "hash_constraint_schedule",
     "case_count",
     "exact_match_rate",
+    "mean_channel_lost_position_recovery_rate",
     "mean_lost_position_recovery_rate",
     "mean_token_edit_distance",
     "known_position_preserved_rate",
@@ -54,6 +55,11 @@ SUMMARY_FIELDS = (
 )
 PLOT_SPECS = (
     ("exact_match_rate.svg", "Exact Match Rate", "exact_match_rate"),
+    (
+        "channel_lost_position_recovery_rate.svg",
+        "Mean Channel-Lost Position Recovery Rate",
+        "mean_channel_lost_position_recovery_rate",
+    ),
     (
         "lost_position_recovery_rate.svg",
         "Mean Lost-Position Recovery Rate",
@@ -273,6 +279,9 @@ def _failure_example(event: dict[str, Any], metrics: dict[str, Any]) -> dict[str
         "exact_match": metrics.get("exact_match"),
         "token_edit_distance": metrics.get("token_edit_distance"),
         "lost_position_recovery_rate": metrics.get("lost_position_recovery_rate"),
+        "channel_lost_position_recovery_rate": metrics.get(
+            "channel_lost_position_recovery_rate"
+        ),
         "remaining_mask_token_count": metrics.get("remaining_mask_token_count"),
         "known_count": reconstruction_plan.get("known_count"),
         "hash_guided_count": reconstruction_plan.get("hash_guided_count"),
@@ -284,12 +293,17 @@ def _failure_example(event: dict[str, Any], metrics: dict[str, Any]) -> dict[str
 
 
 def _event_metrics(event: dict[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
     if isinstance(event.get("metrics"), dict):
-        return dict(event["metrics"])
+        metrics.update(event["metrics"])
+    if isinstance(event.get("channel_lost_metrics"), dict):
+        metrics.update(event["channel_lost_metrics"])
     case = event.get("case")
     if isinstance(case, dict) and isinstance(case.get("metrics"), dict):
-        return dict(case["metrics"])
-    return {}
+        metrics.update(case["metrics"])
+    if isinstance(case, dict) and isinstance(case.get("channel_lost_metrics"), dict):
+        metrics.update(case["channel_lost_metrics"])
+    return metrics
 
 
 def _event_sample(event: dict[str, Any]) -> dict[str, Any]:

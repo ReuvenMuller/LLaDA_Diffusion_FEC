@@ -523,7 +523,10 @@ def _result_row(
     hash_profile_source: str,
     vocab_size: int,
 ) -> dict[str, Any]:
-    metrics = case.metrics.to_dict()
+    metrics = {
+        **case.metrics.to_dict(),
+        **case.channel_lost_metrics.to_dict(),
+    }
     plan = case.reconstruction_plan
     diagnostics = case.decoding_result.diagnostics
     packet_count = len(case.loss_result.received) + len(case.loss_result.dropped)

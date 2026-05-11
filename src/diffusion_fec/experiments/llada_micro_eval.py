@@ -738,6 +738,7 @@ def _result_row(
         "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode"),
         "proposal_interface_used": diagnostics.get("proposal_interface_used"),
         **case.metrics.to_dict(),
+        **case.channel_lost_metrics.to_dict(),
     }
 
 

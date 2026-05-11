@@ -7,7 +7,13 @@ from diffusion_fec.decoding.llada_diffusion import (
     decode_masked_diffusion,
 )
 from diffusion_fec.experiments.smoke import SmokeRecoveryCase, run_smoke_recovery_case
-from diffusion_fec.metrics.token_metrics import TokenMetrics, compute_token_metrics
+from diffusion_fec.metrics.token_metrics import (
+    ChannelLostPositionMetrics,
+    channel_lost_source_positions,
+    compute_channel_lost_position_metrics,
+    compute_token_metrics,
+    TokenMetrics,
+)
 from diffusion_fec.models.llada import LLaDAAdapter
 from diffusion_fec.types import (
     ConfidenceStat,
@@ -22,6 +28,7 @@ from diffusion_fec.types import (
 __all__ = [
     "ConfidenceStat",
     "ConstraintMasks",
+    "ChannelLostPositionMetrics",
     "DecodingResult",
     "DiffusionDecodingConfig",
     "LLaDAAdapter",
@@ -35,6 +42,8 @@ __all__ = [
     "TokenSample",
     "build_constraint_masks",
     "build_token_hash_map",
+    "channel_lost_source_positions",
+    "compute_channel_lost_position_metrics",
     "decode_masked_diffusion",
     "compute_token_metrics",
     "run_smoke_recovery_case",

@@ -393,6 +393,13 @@ conflicts, parity candidate rejections, parity filter fallbacks, and final
 parity audit counts. These are decoder and coding validation outputs, not final
 research claims.
 
+For headline recovery comparisons, use
+`channel_lost_position_recovery_rate`. It scores against source-token positions
+erased by the channel before any XOR repair, parity peeling, or hybrid promotion.
+The older `lost_position_recovery_rate` is retained for backward compatibility;
+it is plan-state based and can be misleading for classical and hybrid methods
+that promote repaired tokens to known positions before metric scoring.
+
 The first 10-sample hybrid validation completed on 2026-05-11:
 
 ```text
@@ -427,10 +434,21 @@ slightly beat hash8 on lost-token recovery and substantially improved token edit
 distance, at higher decode latency. This is promising validation evidence, not a
 final research claim.
 
-Note: the current XOR-only `lost_position_recovery_rate` is not a good standalone
-classical repair statistic because repaired parity tokens are promoted to known
-positions before metric scoring; use edit distance, known count, and repair
-diagnostics for those rows until the classical metric view is refined.
+Note: this first hybrid table was produced before the channel-loss recovery
+metric was added. Reanalyse the run artifacts with:
+
+```bash
+python -m diffusion_fec.analysis.channel_recovery \
+  --run-root /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-hybrid-xor-20260511_162750 \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-hybrid-xor-20260511_162750/channel_reanalysis \
+  --patch-results
+python -m diffusion_fec.analysis.report \
+  --run-root /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-hybrid-xor-20260511_162750 \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-hybrid-xor-20260511_162750/analysis_channel_loss
+```
+
+After that, use `mean_channel_lost_position_recovery_rate` in summary tables for
+classical and hybrid comparison.
 
 ## Analysis Artifacts
 
@@ -447,6 +465,7 @@ The analysis writer discovers `results.csv` and `events.jsonl`, then writes:
 - `aggregate.csv`
 - `summary.md`
 - `exact_match_rate.svg`
+- `channel_lost_position_recovery_rate.svg`
 - `lost_position_recovery_rate.svg`
 - `decode_latency_sec.svg`
 - `repair_overhead_ratio.svg`
@@ -454,9 +473,10 @@ The analysis writer discovers `results.csv` and `events.jsonl`, then writes:
 - `failure_examples.jsonl`
 - `analysis_manifest.json`
 
-Use `total_overhead_ratio` for strategy comparison. It combines classical
-repair-token overhead with transmitted hash metadata token-equivalent overhead.
-The model+hash path reports `hash_metadata_bit_count`,
+Use `channel_lost_position_recovery_rate` as the headline recovery metric and
+`total_overhead_ratio` for strategy comparison. Total overhead combines
+classical repair-token overhead with transmitted hash metadata token-equivalent
+overhead. The model+hash path reports `hash_metadata_bit_count`,
 `hash_metadata_token_equivalent_overhead_ratio`, and `total_overhead_ratio` so
 lookback metadata is not treated as free.
 

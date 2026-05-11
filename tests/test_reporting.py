@@ -41,7 +41,13 @@ def test_build_analysis_artifacts_writes_summary_plots_and_failures(tmp_path) ->
     assert "mean_run_wall_time_sec" in (analysis_dir / "summary.md").read_text(
         encoding="utf-8"
     )
+    assert "mean_channel_lost_position_recovery_rate" in (analysis_dir / "summary.md").read_text(
+        encoding="utf-8"
+    )
     assert "<svg" in (analysis_dir / "exact_match_rate.svg").read_text(encoding="utf-8")
+    assert "<svg" in (analysis_dir / "channel_lost_position_recovery_rate.svg").read_text(
+        encoding="utf-8"
+    )
     assert "<svg" in (analysis_dir / "total_overhead_ratio.svg").read_text(encoding="utf-8")
     failures = read_jsonl(analysis_dir / "failure_examples.jsonl")
     assert failures[0]["case_id"] == "case0001"
@@ -89,6 +95,7 @@ def test_report_cli_entrypoint(tmp_path) -> None:
     assert read_json(output_dir / "analysis_manifest.json")["aggregate_row_count"] == 1
     assert (output_dir / "total_overhead_ratio.svg").exists()
     assert (output_dir / "repair_overhead_ratio.svg").exists()
+    assert (output_dir / "channel_lost_position_recovery_rate.svg").exists()
 
 
 def _write_results_csv(path) -> None:
@@ -107,6 +114,9 @@ def _write_results_csv(path) -> None:
                 "known_position_preserved",
                 "token_edit_distance",
                 "lost_position_recovery_rate",
+                "channel_lost_position_recovery_rate",
+                "channel_lost_position_count",
+                "channel_lost_position_recovered_count",
                 "remaining_mask_token_count",
                 "decode_latency_sec",
                 "run_wall_time_sec",
@@ -129,6 +139,9 @@ def _write_results_csv(path) -> None:
                 "known_position_preserved": "True",
                 "token_edit_distance": "0",
                 "lost_position_recovery_rate": "1.0",
+                "channel_lost_position_recovery_rate": "1.0",
+                "channel_lost_position_count": "0",
+                "channel_lost_position_recovered_count": "0",
                 "remaining_mask_token_count": "0",
                 "decode_latency_sec": "0.0",
                 "run_wall_time_sec": "2.0",
@@ -150,6 +163,9 @@ def _write_results_csv(path) -> None:
                 "known_position_preserved": "True",
                 "token_edit_distance": "1",
                 "lost_position_recovery_rate": "0.0",
+                "channel_lost_position_recovery_rate": "0.0",
+                "channel_lost_position_count": "1",
+                "channel_lost_position_recovered_count": "0",
                 "remaining_mask_token_count": "1",
                 "decode_latency_sec": "0.0",
                 "run_wall_time_sec": "4.0",
@@ -191,7 +207,13 @@ def _write_events_jsonl(path) -> None:
                     "exact_match": False,
                     "token_edit_distance": 1,
                     "lost_position_recovery_rate": 0.0,
+                    "channel_lost_position_recovery_rate": 0.0,
                     "remaining_mask_token_count": 1,
+                },
+                "channel_lost_metrics": {
+                    "channel_lost_position_recovery_rate": 0.0,
+                    "channel_lost_position_count": 1,
+                    "channel_lost_position_recovered_count": 0,
                 },
             },
         },

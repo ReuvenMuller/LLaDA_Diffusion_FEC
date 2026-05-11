@@ -27,7 +27,13 @@ from diffusion_fec.decoding.llada_diffusion import (
     DiffusionDecodingConfig,
     decode_masked_diffusion,
 )
-from diffusion_fec.metrics.token_metrics import TokenMetrics, compute_token_metrics
+from diffusion_fec.metrics.token_metrics import (
+    ChannelLostPositionMetrics,
+    channel_lost_source_positions,
+    compute_channel_lost_position_metrics,
+    compute_token_metrics,
+    TokenMetrics,
+)
 from diffusion_fec.types import DecodingResult, Packet, ReconstructionPlan, TokenSample
 
 
@@ -55,6 +61,18 @@ class SmokeRecoveryCase:
         )
 
     @property
+    def channel_lost_positions(self) -> tuple[int, ...]:
+        return channel_lost_source_positions(self.loss_result.dropped)
+
+    @property
+    def channel_lost_metrics(self) -> ChannelLostPositionMetrics:
+        return compute_channel_lost_position_metrics(
+            original_tokens=self.sample.token_ids,
+            reconstructed_tokens=self.decoding_result.reconstructed_tokens,
+            channel_lost_positions=self.channel_lost_positions,
+        )
+
+    @property
     def exact_token_match(self) -> bool:
         return self.metrics.exact_match
 
@@ -72,7 +90,12 @@ class SmokeRecoveryCase:
             "oracle_hash_metadata": self.oracle_hash_metadata,
             "reconstruction_plan": self.reconstruction_plan.to_dict(),
             "decoding_result": self.decoding_result.to_dict(),
-            "metrics": self.metrics.to_dict(),
+            "channel_lost_positions": list(self.channel_lost_positions),
+            "channel_lost_metrics": self.channel_lost_metrics.to_dict(),
+            "metrics": {
+                **self.metrics.to_dict(),
+                **self.channel_lost_metrics.to_dict(),
+            },
             "exact_token_match": self.exact_token_match,
             "known_positions_preserved": self.known_positions_preserved,
         }
