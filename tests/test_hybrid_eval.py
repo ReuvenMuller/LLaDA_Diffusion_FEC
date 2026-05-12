@@ -19,8 +19,10 @@ from diffusion_fec.coding.token_hash import build_token_hash_map
 from diffusion_fec.decoding.llada_diffusion import DiffusionDecodingConfig
 from diffusion_fec.experiments.hybrid_eval import (
     HYBRID_MODE_ITERATIVE_PEEL,
+    HYBRID_MODE_ITERATIVE_ROLLBACK,
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
+    IterativeRollbackXorHook,
     IterativeXorPeelHook,
     XOR_CODE_SPARSE_FOUNTAIN,
     XOR_CODE_STRIPE,
@@ -28,7 +30,7 @@ from diffusion_fec.experiments.hybrid_eval import (
     run_hybrid_xor_hash_micro_eval,
 )
 from diffusion_fec.experiments.runner import main as runner_main
-from diffusion_fec.types import TokenSample
+from diffusion_fec.types import ReconstructionEntry, ReconstructionPlan, TokenSample
 
 
 class PositionChoiceModel:
@@ -337,6 +339,179 @@ def test_iterative_peel_rejects_special_token_solution() -> None:
     assert hook.diagnostics()["iterative_peel_special_token_conflict_count"] == 1
 
 
+def test_iterative_rollback_single_soft_suspect_rolls_back_and_bans() -> None:
+    token_hash = make_token_hash()
+    wrong_bucket = (token_hash.bucket_for_token(11) + 1) % 16
+    hook = IterativeRollbackXorHook(
+        equations=[
+            XorTokenEquation("eq0", 2, 0, 0, (0, 1), 10 ^ 11),
+        ],
+        hash_metadata={1: wrong_bucket},
+        token_hash_map=token_hash,
+        mask_token_id=0,
+        vocab_size=64,
+        banned_token_ids={0, 1, 2},
+        enable_linear_solve=False,
+    )
+
+    result = hook(
+        input_ids=(10, 0),
+        step=0,
+        prompt_length=0,
+        committed_positions=(0,),
+        fixed_token_ids={},
+        plan=_two_token_empty_plan(),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+
+    assert result["fixed_tokens"] == {}
+    assert result["rollback_positions"] == (0,)
+    assert result["position_banned_tokens"] == {0: (10,)}
+    diagnostics = hook.diagnostics()
+    assert diagnostics["rollback_single_suspect_count"] == 1
+    assert diagnostics["rollback_banned_token_count"] == 1
+    assert diagnostics["iterative_peel_hash_conflict_count"] == 1
+
+
+def test_iterative_rollback_multiple_soft_suspects_roll_back_without_bans() -> None:
+    token_hash = make_token_hash()
+    wrong_bucket = (token_hash.bucket_for_token(13) + 1) % 16
+    hook = IterativeRollbackXorHook(
+        equations=[
+            XorTokenEquation("eq0", 3, 0, 0, (0, 1, 2), 10 ^ 12 ^ 13),
+        ],
+        hash_metadata={2: wrong_bucket},
+        token_hash_map=token_hash,
+        mask_token_id=0,
+        vocab_size=64,
+        banned_token_ids={0, 1, 2},
+        enable_linear_solve=False,
+    )
+
+    result = hook(
+        input_ids=(10, 12, 0),
+        step=0,
+        prompt_length=0,
+        committed_positions=(0, 1),
+        fixed_token_ids={},
+        plan=build_empty_plan(3),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+
+    assert result["rollback_positions"] == (0, 1)
+    assert result["position_banned_tokens"] == {}
+    assert hook.diagnostics()["rollback_multi_suspect_count"] == 1
+
+
+def test_iterative_rollback_does_not_rollback_received_roots() -> None:
+    token_hash = make_token_hash()
+    wrong_bucket = (token_hash.bucket_for_token(11) + 1) % 16
+    hook = IterativeRollbackXorHook(
+        equations=[
+            XorTokenEquation("eq0", 2, 0, 0, (0, 1), 10 ^ 11),
+        ],
+        hash_metadata={1: wrong_bucket},
+        token_hash_map=token_hash,
+        mask_token_id=0,
+        vocab_size=64,
+        banned_token_ids={0, 1, 2},
+        enable_linear_solve=False,
+    )
+
+    result = hook(
+        input_ids=(10, 0),
+        step=0,
+        prompt_length=0,
+        committed_positions=(),
+        fixed_token_ids={0: 10},
+        plan=plan_with_known_prefix((10, None)),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+
+    assert result["rollback_positions"] == ()
+    assert hook.diagnostics()["rollback_event_count"] == 0
+
+
+def test_iterative_rollback_invalidates_dependent_parity_tokens() -> None:
+    token_hash = make_token_hash()
+    wrong_bucket = (token_hash.bucket_for_token(13) + 1) % 16
+    hook = IterativeRollbackXorHook(
+        equations=[
+            XorTokenEquation("eq0", 4, 0, 0, (0, 1), 10 ^ 11),
+            XorTokenEquation("eq1", 5, 1, 0, (0, 2, 3), 10 ^ 12 ^ 13),
+        ],
+        hash_metadata={3: wrong_bucket},
+        token_hash_map=token_hash,
+        mask_token_id=0,
+        vocab_size=64,
+        banned_token_ids={0, 1, 2},
+        enable_linear_solve=False,
+    )
+    first = hook(
+        input_ids=(10, 0, 0, 0),
+        step=0,
+        prompt_length=0,
+        committed_positions=(0,),
+        fixed_token_ids={},
+        plan=build_empty_plan(4),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+    assert first["fixed_tokens"] == {1: 11}
+
+    second = hook(
+        input_ids=(10, 11, 12, 0),
+        step=1,
+        prompt_length=0,
+        committed_positions=(2,),
+        fixed_token_ids={1: 11},
+        plan=build_empty_plan(4),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+
+    assert second["rollback_positions"] == (0, 1, 2)
+    assert hook.diagnostics()["rollback_provenance_invalidated_count"] == 1
+
+
+def test_iterative_rollback_max_per_position_prevents_loop() -> None:
+    token_hash = make_token_hash()
+    wrong_bucket = (token_hash.bucket_for_token(11) + 1) % 16
+    hook = IterativeRollbackXorHook(
+        equations=[
+            XorTokenEquation("eq0", 2, 0, 0, (0, 1), 10 ^ 11),
+        ],
+        hash_metadata={1: wrong_bucket},
+        token_hash_map=token_hash,
+        mask_token_id=0,
+        vocab_size=64,
+        banned_token_ids={0, 1, 2},
+        enable_linear_solve=False,
+        rollback_max_per_position=1,
+    )
+
+    first = hook(
+        input_ids=(10, 0),
+        step=0,
+        prompt_length=0,
+        committed_positions=(0,),
+        fixed_token_ids={},
+        plan=_two_token_empty_plan(),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+    second = hook(
+        input_ids=(10, 0),
+        step=1,
+        prompt_length=0,
+        committed_positions=(0,),
+        fixed_token_ids={},
+        plan=_two_token_empty_plan(),
+        config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64),
+    )
+
+    assert first["rollback_positions"] == (0,)
+    assert second["rollback_positions"] == ()
+    assert hook.diagnostics()["rollback_max_per_position_hits"] == 1
+
+
 def test_iterative_peel_requires_validated_commit_once_hash_schedule() -> None:
     sample = TokenSample(
         sample_id="sample-1",
@@ -378,10 +553,70 @@ def test_iterative_peel_requires_validated_commit_once_hash_schedule() -> None:
         )
 
 
+def test_iterative_rollback_requires_sparse_fountain_code() -> None:
+    import pytest
+
+    sample = TokenSample(
+        sample_id="sample-1",
+        text="fake",
+        token_ids=(10, 11),
+        tokenizer_name="fake-tokenizer",
+    )
+
+    with pytest.raises(ValueError, match="iterative_rollback.*sparse_fountain"):
+        run_hybrid_recovery_case(
+            sample=sample,
+            model=PositionChoiceModel({}),
+            config=DiffusionDecodingConfig(mask_token_id=0, vocab_size=64, steps=2),
+            tokens_per_packet=1,
+            token_hash_map=make_token_hash(),
+            xor_config=XorParityConfig(data_packets_per_stripe=2),
+            source_layout=SourceLayoutConfig(),
+            wire_interleaving=WireInterleavingConfig(),
+            channel_config=PacketLossChannelConfig(
+                mode=CHANNEL_BURST,
+                burst_start_wire_id=0,
+                burst_length=1,
+            ),
+            hybrid_mode=HYBRID_MODE_ITERATIVE_ROLLBACK,
+            parity_filter_fallback=True,
+            xor_code=XOR_CODE_STRIPE,
+        )
+
+
 def _two_token_empty_plan():
     from diffusion_fec.coding.packetizer import build_reconstruction_plan
 
     return build_reconstruction_plan(total_tokens=2, received_packets=[])
+
+
+def build_empty_plan(total_tokens):
+    from diffusion_fec.coding.packetizer import build_reconstruction_plan
+
+    return build_reconstruction_plan(total_tokens=total_tokens, received_packets=[])
+
+
+def plan_with_known_prefix(token_ids):
+    entries = []
+    for position, token_id in enumerate(token_ids):
+        if token_id is None:
+            entries.append(
+                ReconstructionEntry(
+                    position=position,
+                    state="unguided",
+                    fixed=False,
+                )
+            )
+        else:
+            entries.append(
+                ReconstructionEntry(
+                    position=position,
+                    state="known",
+                    token_id=token_id,
+                    fixed=True,
+                )
+            )
+    return ReconstructionPlan(entries=tuple(entries), total_tokens=len(entries))
 
 
 def test_hybrid_burst_channel_output_is_deterministic(tmp_path) -> None:
@@ -501,3 +736,37 @@ def test_sparse_hybrid_artifacts_include_sparse_and_linear_diagnostics(tmp_path)
     assert row["iterative_linear_solver_enabled"] == "True"
     assert event["case"]["xor_code"] == XOR_CODE_SPARSE_FOUNTAIN
     assert event["case"]["sparse_diagnostics"]["coverage_pass_degree"] >= 1
+
+
+def test_sparse_iterative_rollback_artifacts_include_rollback_diagnostics(tmp_path) -> None:
+    output_dir = tmp_path / "sparse_rollback"
+
+    run_hybrid_xor_hash_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=1,
+        vocab_size=64,
+        steps=2,
+        hybrid_mode=HYBRID_MODE_ITERATIVE_ROLLBACK,
+        xor_code=XOR_CODE_SPARSE_FOUNTAIN,
+        sparse_xor_seed=2,
+        rollback_extra_steps=2,
+        source_layout=SourceLayoutConfig(mode=SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS, chunk_size=1),
+        wire_interleaving=WireInterleavingConfig(mode=WIRE_INTERLEAVING_MATRIX, span=4),
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=2,
+        ),
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    row = read_csv(output_dir / "results.csv")[0]
+    event = json.loads((output_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert manifest["config"]["hybrid_mode"] == HYBRID_MODE_ITERATIVE_ROLLBACK
+    assert manifest["config"]["rollback_extra_steps"] == 2
+    assert row["rollback_enabled"] == "True"
+    assert "rollback_event_count" in row
+    assert "rollback_banned_tokens_by_position" in row
+    assert event["case"]["decoding_result"]["diagnostics"]["rollback_enabled"] is True

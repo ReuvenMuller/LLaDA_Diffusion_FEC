@@ -39,8 +39,13 @@ from diffusion_fec.decoding.llada_diffusion import (
 )
 from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
 from diffusion_fec.experiments.hybrid_eval import (
+    DEFAULT_ROLLBACK_EXTRA_STEPS,
+    DEFAULT_ROLLBACK_MAX_PER_POSITION,
+    DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
+    DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
     DEFAULT_XOR_OVERHEAD_BITS_PER_TOKEN,
     HYBRID_MODE_ITERATIVE_PEEL,
+    HYBRID_MODE_ITERATIVE_ROLLBACK,
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
     XOR_CODE_SPARSE_FOUNTAIN,
@@ -368,7 +373,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--hybrid-mode",
         default=HYBRID_MODE_PARITY_FILTER,
-        choices=[HYBRID_MODE_PRE_PEEL_ONLY, HYBRID_MODE_PARITY_FILTER, HYBRID_MODE_ITERATIVE_PEEL],
+        choices=[
+            HYBRID_MODE_PRE_PEEL_ONLY,
+            HYBRID_MODE_PARITY_FILTER,
+            HYBRID_MODE_ITERATIVE_PEEL,
+            HYBRID_MODE_ITERATIVE_ROLLBACK,
+        ],
+    )
+    parser.add_argument("--rollback-extra-steps", type=int, default=DEFAULT_ROLLBACK_EXTRA_STEPS)
+    parser.add_argument(
+        "--rollback-max-total-steps",
+        type=int,
+        default=DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
+    )
+    parser.add_argument(
+        "--rollback-max-per-position",
+        type=int,
+        default=DEFAULT_ROLLBACK_MAX_PER_POSITION,
+    )
+    parser.add_argument(
+        "--rollback-stop-after-no-progress",
+        type=int,
+        default=DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
     )
     parser.add_argument(
         "--xor-overhead-bits-per-token",
@@ -660,6 +686,10 @@ def main(argv: list[str] | None = None) -> int:
             sparse_xor_max_coverage_degree=args.sparse_xor_max_coverage_degree,
             sparse_xor_max_component_unknowns=args.sparse_xor_max_component_unknowns,
             sparse_xor_enable_linear_solve=args.sparse_xor_enable_linear_solve == "on",
+            rollback_extra_steps=args.rollback_extra_steps,
+            rollback_max_total_steps=args.rollback_max_total_steps,
+            rollback_max_per_position=args.rollback_max_per_position,
+            rollback_stop_after_no_progress=args.rollback_stop_after_no_progress,
             source_layout=_source_layout_from_args(args),
             wire_interleaving=_wire_interleaving_from_args(args),
             channel_config=_channel_config_from_args(args),
@@ -811,6 +841,10 @@ def main(argv: list[str] | None = None) -> int:
                 sparse_xor_max_coverage_degree=args.sparse_xor_max_coverage_degree,
                 sparse_xor_max_component_unknowns=args.sparse_xor_max_component_unknowns,
                 sparse_xor_enable_linear_solve=args.sparse_xor_enable_linear_solve == "on",
+                rollback_extra_steps=args.rollback_extra_steps,
+                rollback_max_total_steps=args.rollback_max_total_steps,
+                rollback_max_per_position=args.rollback_max_per_position,
+                rollback_stop_after_no_progress=args.rollback_stop_after_no_progress,
                 local_files_only=args.llada_local_files_only,
                 allow_cpu=args.allow_cpu_real_llada,
                 hash_profile_dir=args.hash_profile_dir,

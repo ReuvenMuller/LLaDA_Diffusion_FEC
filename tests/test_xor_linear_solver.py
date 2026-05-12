@@ -35,6 +35,9 @@ def test_linear_solver_solves_component_that_peeling_cannot() -> None:
     assert result.peel_iteration_count == 0
     assert result.linear_solver_diagnostics["linear_solver_components_solved"] == 1
     assert result.linear_solver_diagnostics["linear_solver_tokens_recovered"] == 3
+    assert result.recovery_provenance[0].method == "linear"
+    assert set(result.recovery_provenance[0].equation_ids) == {"ab", "bc", "abc"}
+    assert result.recovery_provenance[0].dependency_positions == (1, 2)
 
 
 def test_rank_deficient_component_is_not_promoted() -> None:

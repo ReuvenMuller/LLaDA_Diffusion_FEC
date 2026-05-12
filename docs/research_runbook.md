@@ -329,6 +329,7 @@ Two hybrid modes are available:
 pre_peel_only
 parity_filter
 iterative_peel
+iterative_rollback
 ```
 
 `pre_peel_only` transmits lookback-1 hash metadata on data packets, transmits
@@ -350,6 +351,16 @@ currently known/committed tokens. Newly parity-solved tokens are promoted to
 fixed only after hash validation when metadata exists and vocab/special-token
 legality checks pass. This mode intentionally requires `commit_once + always`.
 It should be validated before sweeping alternative XOR layouts.
+
+`iterative_rollback` is experimental and is currently supported only with
+`xor_code=sparse_fountain`, `commit_once`, and `hash_constraint_schedule=always`.
+It adds conservative parity/hash conflict feedback to iterative peeling. When a
+conflict identifies exactly one soft model-committed token, that token is
+remasked and the exact token ID is banned for that position; when multiple soft
+commits are implicated, all are remasked without new bans. Received tokens are
+trusted roots and are never rolled back. Parity-solved tokens carry dependency
+provenance and are invalidated if a dependency is rolled back. Rollback runs
+report `rollback_*` diagnostics and may use bounded extra repair rounds.
 
 Local fake/model-free smoke:
 
@@ -529,6 +540,30 @@ python -m diffusion_fec.experiments.runner `
   --burst-length 2
 ```
 
+Local fake sparse rollback smoke:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\sparse_fountain_rollback_fake_smoke `
+  --hybrid-xor-hash-micro-eval `
+  --xor-code sparse_fountain `
+  --hybrid-mode iterative_rollback `
+  --sample-lengths 8 `
+  --tokens-per-packet 1 `
+  --vocab-size 64 `
+  --steps 2 `
+  --hash-bits 4 `
+  --xor-overhead-bits-per-token 4 `
+  --sparse-xor-seed 7 `
+  --sparse-xor-enable-linear-solve on `
+  --rollback-extra-steps 4 `
+  --rollback-max-total-steps 16 `
+  --rollback-max-per-position 3 `
+  --channel burst `
+  --burst-start-wire-id 0 `
+  --burst-length 2
+```
+
 Focused real validation should compare only:
 
 ```text
@@ -544,6 +579,16 @@ Use the frozen 10-sample LLaDA-tokenized artifact, loaded hash profiles,
 `wire_interleaving=matrix`, `wire_interleaving_span=4`, and both IID
 `loss_rate=0.5` and burst `burst_start_wire_id=0`, `burst_length=16`. Use
 `channel_lost_position_recovery_rate` as the headline recovery metric.
+
+For rollback validation, keep the matrix focused: compare `hash8`,
+`hash4 + sparse_fountain XOR iterative_peel`, and
+`hash4 + sparse_fountain XOR iterative_rollback` on the same IID and burst
+settings. This is decoder-design validation only.
+
+Future TODO: when the unresolved or conflicted set is small, add an endgame
+search that tries top-k hash-valid candidates and reranks candidate
+combinations by parity satisfaction. That search is not part of the current
+rollback implementation.
 
 The first focused sparse-fountain validation completed on the GPU server:
 

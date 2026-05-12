@@ -15,6 +15,7 @@ from diffusion_fec.baselines.overhead import (
 from diffusion_fec.baselines.xor_equations import (
     ParityCandidateFilter,
     XorAuditResult,
+    XorPeelConflict,
     XorPeelResult,
     audit_xor_equations,
     equations_from_parity_packets,
@@ -111,11 +112,13 @@ from diffusion_fec.types import (
 HYBRID_MODE_PRE_PEEL_ONLY = "pre_peel_only"
 HYBRID_MODE_PARITY_FILTER = "parity_filter"
 HYBRID_MODE_ITERATIVE_PEEL = "iterative_peel"
+HYBRID_MODE_ITERATIVE_ROLLBACK = "iterative_rollback"
 VALID_HYBRID_MODES = frozenset(
     {
         HYBRID_MODE_PRE_PEEL_ONLY,
         HYBRID_MODE_PARITY_FILTER,
         HYBRID_MODE_ITERATIVE_PEEL,
+        HYBRID_MODE_ITERATIVE_ROLLBACK,
     }
 )
 HYBRID_PROTECTION_MODE = "lookback_1+xor_parity"
@@ -127,6 +130,10 @@ XOR_CODE_STRIPE = "stripe"
 XOR_CODE_SPARSE_FOUNTAIN = "sparse_fountain"
 VALID_XOR_CODES = frozenset({XOR_CODE_STRIPE, XOR_CODE_SPARSE_FOUNTAIN})
 DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS = 8
+DEFAULT_ROLLBACK_EXTRA_STEPS = 4
+DEFAULT_ROLLBACK_MAX_TOTAL_STEPS = 16
+DEFAULT_ROLLBACK_MAX_PER_POSITION = 3
+DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS = 2
 
 
 @dataclass(frozen=True)
@@ -189,6 +196,26 @@ class HybridRecoveryCase:
             "channel_lost_positions": list(self.channel_lost_positions),
             "channel_lost_metrics": self.channel_lost_metrics.to_dict(),
             "metrics": {**self.metrics.to_dict(), **self.channel_lost_metrics.to_dict()},
+        }
+
+
+@dataclass(frozen=True)
+class _HybridTokenProvenance:
+    source: str
+    token_id: int
+    step: int | None = None
+    dependency_positions: tuple[int, ...] = ()
+    equation_ids: tuple[str, ...] = ()
+    confidence: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "token_id": self.token_id,
+            "step": self.step,
+            "dependency_positions": list(self.dependency_positions),
+            "equation_ids": list(self.equation_ids),
+            "confidence": self.confidence,
         }
 
 
@@ -331,6 +358,410 @@ class IterativeXorPeelHook:
                 self.linear_solver_diagnostics[key] += int(diagnostics.get(key, 0))
 
 
+class IterativeRollbackXorHook:
+    """Sparse hybrid hook that remasks model commits when parity/hash conflicts identify them."""
+
+    rollback_enabled = True
+
+    def __init__(
+        self,
+        *,
+        equations,
+        hash_metadata: Mapping[int, int],
+        token_hash_map: TokenHashMap,
+        mask_token_id: int,
+        vocab_size: int,
+        banned_token_ids: Sequence[int],
+        enable_linear_solve: bool = True,
+        max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
+        rollback_extra_steps: int = DEFAULT_ROLLBACK_EXTRA_STEPS,
+        rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
+        rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
+        rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
+    ) -> None:
+        self.equations = tuple(equations)
+        self.hash_metadata = {int(position): int(value) for position, value in hash_metadata.items()}
+        self.token_hash_map = token_hash_map
+        self.mask_token_id = int(mask_token_id)
+        self.vocab_size = int(vocab_size)
+        self.banned_token_ids = frozenset(int(token_id) for token_id in banned_token_ids)
+        self.enable_linear_solve = bool(enable_linear_solve)
+        self.max_component_unknowns = int(max_component_unknowns)
+        self.rollback_extra_steps = int(rollback_extra_steps)
+        self.rollback_max_total_steps = int(rollback_max_total_steps)
+        self.rollback_max_per_position = int(rollback_max_per_position)
+        self.rollback_stop_after_no_progress = int(rollback_stop_after_no_progress)
+        if self.rollback_extra_steps < 0:
+            raise ValueError("rollback_extra_steps must be non-negative")
+        if self.rollback_max_total_steps <= 0:
+            raise ValueError("rollback_max_total_steps must be positive")
+        if self.rollback_max_per_position <= 0:
+            raise ValueError("rollback_max_per_position must be positive")
+        if self.rollback_stop_after_no_progress < 0:
+            raise ValueError("rollback_stop_after_no_progress must be non-negative")
+
+        self.call_count = 0
+        self.per_step_recovered_count: list[int] = []
+        self.recovered_tokens: dict[int, int] = {}
+        self.conflicts: dict[tuple[Any, ...], XorPeelConflict] = {}
+        self.linear_solver_diagnostics = _empty_linear_solver_diagnostics(
+            enabled=self.enable_linear_solve
+        )
+        self.provenance: dict[int, _HybridTokenProvenance] = {}
+        self.rollback_counts: dict[int, int] = {}
+        self.rollback_positions: set[int] = set()
+        self.rollback_events: list[dict[str, Any]] = []
+        self.rollback_bans: dict[int, set[int]] = {}
+        self.single_suspect_count = 0
+        self.multi_suspect_count = 0
+        self.max_per_position_hits = 0
+        self.provenance_invalidated_count = 0
+        self.decode_extra_steps_used = 0
+        self.decode_remaining_masks_after_budget = 0
+        self.decode_no_progress_stop = False
+
+    def __call__(
+        self,
+        *,
+        input_ids,
+        step: int,
+        prompt_length: int,
+        committed_positions,
+        fixed_token_ids,
+        plan: ReconstructionPlan,
+        config: DiffusionDecodingConfig,
+    ) -> dict[str, Any]:
+        self.call_count += 1
+        self._ensure_fixed_root_provenance(
+            input_ids=input_ids,
+            plan=plan,
+            prompt_length=prompt_length,
+        )
+        self._record_model_commits(
+            input_ids=input_ids,
+            prompt_length=prompt_length,
+            committed_positions=committed_positions,
+            step=step,
+        )
+        known_tokens = _known_tokens_from_decoder_state(
+            input_ids=input_ids,
+            plan=plan,
+            prompt_length=prompt_length,
+            mask_token_id=self.mask_token_id,
+        )
+        peel = solve_xor_equations(
+            equations=self.equations,
+            known_tokens=known_tokens,
+            hash_metadata=self.hash_metadata,
+            token_hash_map=self.token_hash_map,
+            vocab_size=self.vocab_size,
+            banned_token_ids=self.banned_token_ids,
+            enable_linear_solve=self.enable_linear_solve,
+            max_component_unknowns=self.max_component_unknowns,
+        )
+        self._record_conflicts(peel)
+        self._accumulate_linear_diagnostics(peel.linear_solver_diagnostics)
+
+        conflict_candidates = list(peel.conflicts)
+        conflict_candidates.extend(
+            self._audit_conflicts(token_by_position=known_tokens)
+        )
+        rollback_positions, position_bans = self._rollback_requests(
+            conflicts=conflict_candidates,
+            input_ids=input_ids,
+            prompt_length=prompt_length,
+            step=step,
+        )
+        invalidated = self._invalidate_dependent_parity_tokens(rollback_positions)
+        rollback_positions = tuple(sorted(set(rollback_positions) | set(invalidated)))
+        for position in rollback_positions:
+            self.provenance.pop(position, None)
+            self.recovered_tokens.pop(position, None)
+        newly_fixed = self._accepted_new_fixed_tokens(
+            peel=peel,
+            input_ids=input_ids,
+            prompt_length=prompt_length,
+            rollback_positions=set(rollback_positions),
+        )
+        self.recovered_tokens.update(newly_fixed)
+        self.per_step_recovered_count.append(len(newly_fixed))
+        return {
+            "fixed_tokens": newly_fixed,
+            "rollback_positions": rollback_positions,
+            "position_banned_tokens": position_bans,
+        }
+
+    def record_decode_outcome(
+        self,
+        *,
+        extra_steps_used: int,
+        remaining_masked_count: int,
+        no_progress_stop: bool,
+    ) -> None:
+        self.decode_extra_steps_used = int(extra_steps_used)
+        self.decode_remaining_masks_after_budget = int(remaining_masked_count)
+        self.decode_no_progress_stop = bool(no_progress_stop)
+
+    def diagnostics(self) -> dict[str, Any]:
+        conflicts = tuple(self.conflicts.values())
+        return {
+            **_iterative_peel_style_diagnostics(
+                enabled=True,
+                call_count=self.call_count,
+                recovered_tokens=self.recovered_tokens,
+                per_step_recovered_count=self.per_step_recovered_count,
+                conflicts=conflicts,
+                enable_linear_solve=self.enable_linear_solve,
+                linear_solver_diagnostics=self.linear_solver_diagnostics,
+            ),
+            "rollback_enabled": True,
+            "rollback_event_count": len(self.rollback_events),
+            "rollback_conflict_equation_count": len(
+                {event["equation_id"] for event in self.rollback_events}
+            ),
+            "rollback_positions_count": len(self.rollback_positions),
+            "rollback_positions": tuple(sorted(self.rollback_positions)),
+            "rollback_single_suspect_count": self.single_suspect_count,
+            "rollback_multi_suspect_count": self.multi_suspect_count,
+            "rollback_banned_token_count": sum(len(tokens) for tokens in self.rollback_bans.values()),
+            "rollback_banned_tokens_by_position": {
+                position: tuple(sorted(tokens))
+                for position, tokens in sorted(self.rollback_bans.items())
+            },
+            "rollback_max_per_position_hits": self.max_per_position_hits,
+            "rollback_extra_steps_used": self.decode_extra_steps_used,
+            "rollback_remaining_masks_after_budget": self.decode_remaining_masks_after_budget,
+            "rollback_provenance_invalidated_count": self.provenance_invalidated_count,
+            "rollback_no_progress_stop": self.decode_no_progress_stop,
+            "rollback_events": tuple(self.rollback_events),
+        }
+
+    def _ensure_fixed_root_provenance(
+        self,
+        *,
+        input_ids,
+        plan: ReconstructionPlan,
+        prompt_length: int,
+    ) -> None:
+        for entry in plan.entries:
+            token_id = int(input_ids[prompt_length + entry.position])
+            if entry.fixed and token_id != self.mask_token_id and entry.position not in self.provenance:
+                self.provenance[entry.position] = _HybridTokenProvenance(
+                    source="received_or_initial_parity",
+                    token_id=token_id,
+                    step=None,
+                )
+
+    def _record_model_commits(
+        self,
+        *,
+        input_ids,
+        prompt_length: int,
+        committed_positions,
+        step: int,
+    ) -> None:
+        for raw_position in committed_positions:
+            position = int(raw_position)
+            token_id = int(input_ids[prompt_length + position])
+            if token_id == self.mask_token_id:
+                continue
+            current = self.provenance.get(position)
+            if current is not None and current.source != "model_commit":
+                continue
+            self.provenance[position] = _HybridTokenProvenance(
+                source="model_commit",
+                token_id=token_id,
+                step=step,
+                confidence=None,
+            )
+
+    def _accepted_new_fixed_tokens(
+        self,
+        *,
+        peel: XorPeelResult,
+        input_ids,
+        prompt_length: int,
+        rollback_positions: set[int],
+    ) -> dict[int, int]:
+        newly_fixed: dict[int, int] = {}
+        for position, token_id in peel.recovered_tokens.items():
+            position = int(position)
+            if position in self.recovered_tokens or position in rollback_positions:
+                continue
+            if int(input_ids[prompt_length + position]) != self.mask_token_id:
+                continue
+            provenance = peel.recovery_provenance.get(position)
+            if provenance is None:
+                continue
+            dependencies = tuple(int(dep) for dep in provenance.dependency_positions)
+            if any(dep in rollback_positions for dep in dependencies):
+                continue
+            newly_fixed[position] = int(token_id)
+            self.provenance[position] = _HybridTokenProvenance(
+                source="parity_solve",
+                token_id=int(token_id),
+                step=None,
+                dependency_positions=dependencies,
+                equation_ids=tuple(provenance.equation_ids),
+            )
+        return newly_fixed
+
+    def _audit_conflicts(self, *, token_by_position: Mapping[int, int]) -> tuple[XorPeelConflict, ...]:
+        audit = audit_xor_equations(equations=self.equations, token_by_position=token_by_position)
+        conflicts: list[XorPeelConflict] = []
+        for violation in audit.violations:
+            positions = tuple(int(position) for position in violation["positions"])
+            conflicts.append(
+                XorPeelConflict(
+                    equation_id=str(violation["equation_id"]),
+                    position=None,
+                    solved_token_id=None,
+                    reason="parity_equation_violation",
+                    equation_positions=positions,
+                    dependency_positions=positions,
+                )
+            )
+        if conflicts:
+            self._record_conflicts_from_sequence(conflicts)
+        return tuple(conflicts)
+
+    def _rollback_requests(
+        self,
+        *,
+        conflicts: Sequence[XorPeelConflict],
+        input_ids,
+        prompt_length: int,
+        step: int,
+    ) -> tuple[tuple[int, ...], dict[int, tuple[int, ...]]]:
+        rollback_positions: set[int] = set()
+        position_bans: dict[int, set[int]] = {}
+        for conflict in conflicts:
+            suspect_positions = conflict.dependency_positions or conflict.equation_positions
+            soft_suspects = sorted(self._soft_model_dependencies(suspect_positions))
+            if not soft_suspects:
+                continue
+            if len(soft_suspects) == 1:
+                self.single_suspect_count += 1
+                position = soft_suspects[0]
+                if self._can_rollback(position):
+                    rollback_positions.add(position)
+                    token_id = int(input_ids[prompt_length + position])
+                    if token_id != self.mask_token_id:
+                        position_bans.setdefault(position, set()).add(token_id)
+                        self.rollback_bans.setdefault(position, set()).add(token_id)
+                self._record_rollback_event(
+                    conflict=conflict,
+                    suspects=(position,),
+                    step=step,
+                    rollback_kind="single_suspect",
+                )
+            else:
+                self.multi_suspect_count += 1
+                accepted = tuple(position for position in soft_suspects if self._can_rollback(position))
+                rollback_positions.update(accepted)
+                self._record_rollback_event(
+                    conflict=conflict,
+                    suspects=accepted,
+                    step=step,
+                    rollback_kind="multi_suspect",
+                )
+        for position in rollback_positions:
+            self.rollback_counts[position] = self.rollback_counts.get(position, 0) + 1
+            self.rollback_positions.add(position)
+        return (
+            tuple(sorted(rollback_positions)),
+            {position: tuple(sorted(tokens)) for position, tokens in sorted(position_bans.items())},
+        )
+
+    def _soft_model_dependencies(self, positions: Sequence[int]) -> set[int]:
+        soft: set[int] = set()
+        seen: set[int] = set()
+
+        def visit(position: int) -> None:
+            if position in seen:
+                return
+            seen.add(position)
+            provenance = self.provenance.get(position)
+            if provenance is None:
+                return
+            if provenance.source == "model_commit":
+                soft.add(position)
+                return
+            if provenance.source == "parity_solve":
+                for dependency in provenance.dependency_positions:
+                    visit(dependency)
+
+        for position in positions:
+            visit(int(position))
+        return soft
+
+    def _can_rollback(self, position: int) -> bool:
+        if self.rollback_counts.get(position, 0) >= self.rollback_max_per_position:
+            self.max_per_position_hits += 1
+            return False
+        return True
+
+    def _invalidate_dependent_parity_tokens(self, rollback_positions: Sequence[int]) -> tuple[int, ...]:
+        invalidated: set[int] = set()
+        queue = list(int(position) for position in rollback_positions)
+        while queue:
+            position = queue.pop()
+            for candidate, provenance in list(self.provenance.items()):
+                if candidate in invalidated or provenance.source != "parity_solve":
+                    continue
+                if position in provenance.dependency_positions:
+                    invalidated.add(candidate)
+                    queue.append(candidate)
+        for position in invalidated:
+            self.provenance.pop(position, None)
+            self.recovered_tokens.pop(position, None)
+        self.provenance_invalidated_count += len(invalidated)
+        self.rollback_positions.update(invalidated)
+        return tuple(sorted(invalidated))
+
+    def _record_rollback_event(
+        self,
+        *,
+        conflict: XorPeelConflict,
+        suspects: Sequence[int],
+        step: int,
+        rollback_kind: str,
+    ) -> None:
+        self.rollback_events.append(
+            {
+                "step": step,
+                "equation_id": conflict.equation_id,
+                "reason": conflict.reason,
+                "rollback_kind": rollback_kind,
+                "suspect_positions": list(suspects),
+                "conflict_position": conflict.position,
+                "equation_positions": list(conflict.equation_positions),
+                "dependency_positions": list(conflict.dependency_positions),
+            }
+        )
+
+    def _record_conflicts(self, peel: XorPeelResult) -> None:
+        self._record_conflicts_from_sequence(peel.conflicts)
+
+    def _record_conflicts_from_sequence(self, conflicts: Sequence[XorPeelConflict]) -> None:
+        for conflict in conflicts:
+            key = (
+                conflict.equation_id,
+                conflict.position,
+                conflict.solved_token_id,
+                conflict.reason,
+                conflict.dependency_positions,
+            )
+            self.conflicts[key] = conflict
+
+    def _accumulate_linear_diagnostics(self, diagnostics: Mapping[str, Any]) -> None:
+        for key in self.linear_solver_diagnostics:
+            if key == "linear_solver_enabled":
+                self.linear_solver_diagnostics[key] = self.enable_linear_solve
+            else:
+                self.linear_solver_diagnostics[key] += int(diagnostics.get(key, 0))
+
+
 def run_hybrid_xor_hash_micro_eval(
     *,
     output_dir: str | Path,
@@ -355,6 +786,10 @@ def run_hybrid_xor_hash_micro_eval(
     sparse_xor_max_coverage_degree: int = 8,
     sparse_xor_max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
     sparse_xor_enable_linear_solve: bool = True,
+    rollback_extra_steps: int = DEFAULT_ROLLBACK_EXTRA_STEPS,
+    rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
+    rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
+    rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
     channel_config: PacketLossChannelConfig | None = None,
@@ -420,6 +855,10 @@ def run_hybrid_xor_hash_micro_eval(
         sparse_xor_max_coverage_degree=sparse_xor_max_coverage_degree,
         sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
         sparse_xor_enable_linear_solve=sparse_xor_enable_linear_solve,
+        rollback_extra_steps=rollback_extra_steps,
+        rollback_max_total_steps=rollback_max_total_steps,
+        rollback_max_per_position=rollback_max_per_position,
+        rollback_stop_after_no_progress=rollback_stop_after_no_progress,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -458,6 +897,10 @@ def run_real_llada_hybrid_xor_hash_micro_eval(
     sparse_xor_max_coverage_degree: int = 8,
     sparse_xor_max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
     sparse_xor_enable_linear_solve: bool = True,
+    rollback_extra_steps: int = DEFAULT_ROLLBACK_EXTRA_STEPS,
+    rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
+    rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
+    rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
     local_files_only: bool = False,
     allow_cpu: bool = False,
     hash_profile_dir: str | Path | None = None,
@@ -562,6 +1005,10 @@ def run_real_llada_hybrid_xor_hash_micro_eval(
         sparse_xor_max_coverage_degree=sparse_xor_max_coverage_degree,
         sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
         sparse_xor_enable_linear_solve=sparse_xor_enable_linear_solve,
+        rollback_extra_steps=rollback_extra_steps,
+        rollback_max_total_steps=rollback_max_total_steps,
+        rollback_max_per_position=rollback_max_per_position,
+        rollback_stop_after_no_progress=rollback_stop_after_no_progress,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -599,13 +1046,19 @@ def run_hybrid_recovery_case(
     sparse_config: SparseFountainXorConfig | None = None,
     sparse_linear_solve_enabled: bool = True,
     sparse_max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
+    rollback_extra_steps: int = DEFAULT_ROLLBACK_EXTRA_STEPS,
+    rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
+    rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
+    rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
 ) -> HybridRecoveryCase:
     """Run one hybrid packet-loss and LLaDA recovery case."""
 
     _validate_hybrid_mode(hybrid_mode)
     _validate_xor_code(xor_code)
-    if hybrid_mode == HYBRID_MODE_ITERATIVE_PEEL:
+    if hybrid_mode in {HYBRID_MODE_ITERATIVE_PEEL, HYBRID_MODE_ITERATIVE_ROLLBACK}:
         _validate_iterative_peel_decoder_config(config)
+    if hybrid_mode == HYBRID_MODE_ITERATIVE_ROLLBACK:
+        _validate_iterative_rollback_config(xor_code=xor_code)
     encoded = _encode_repair(
         sample=sample,
         tokens_per_packet=tokens_per_packet,
@@ -661,7 +1114,11 @@ def run_hybrid_recovery_case(
         hash_metadata=hash_metadata,
     )
     parity_filter = None
-    if hybrid_mode in {HYBRID_MODE_PARITY_FILTER, HYBRID_MODE_ITERATIVE_PEEL}:
+    if hybrid_mode in {
+        HYBRID_MODE_PARITY_FILTER,
+        HYBRID_MODE_ITERATIVE_PEEL,
+        HYBRID_MODE_ITERATIVE_ROLLBACK,
+    }:
         parity_filter = ParityCandidateFilter(
             equations=received_equations,
             known_tokens=initial_peel.known_tokens,
@@ -682,6 +1139,24 @@ def run_hybrid_recovery_case(
                 sparse_linear_solve_enabled=sparse_linear_solve_enabled,
             ),
             max_component_unknowns=sparse_max_component_unknowns,
+        )
+    elif hybrid_mode == HYBRID_MODE_ITERATIVE_ROLLBACK:
+        post_commit_hook = IterativeRollbackXorHook(
+            equations=received_equations,
+            hash_metadata=hash_metadata,
+            token_hash_map=token_hash_map,
+            mask_token_id=config.mask_token_id,
+            vocab_size=config.vocab_size,
+            banned_token_ids=config.special_token_ids,
+            enable_linear_solve=_linear_solve_enabled_for_code(
+                xor_code=xor_code,
+                sparse_linear_solve_enabled=sparse_linear_solve_enabled,
+            ),
+            max_component_unknowns=sparse_max_component_unknowns,
+            rollback_extra_steps=rollback_extra_steps,
+            rollback_max_total_steps=rollback_max_total_steps,
+            rollback_max_per_position=rollback_max_per_position,
+            rollback_stop_after_no_progress=rollback_stop_after_no_progress,
         )
     decoding_result = decode_masked_diffusion(
         model=model,
@@ -838,6 +1313,10 @@ def _run_hybrid_cases(
     sparse_xor_max_coverage_degree: int,
     sparse_xor_max_component_unknowns: int,
     sparse_xor_enable_linear_solve: bool,
+    rollback_extra_steps: int,
+    rollback_max_total_steps: int,
+    rollback_max_per_position: int,
+    rollback_stop_after_no_progress: int,
     source_layout: SourceLayoutConfig | None,
     wire_interleaving: WireInterleavingConfig | None,
     channel_config: PacketLossChannelConfig | None,
@@ -874,6 +1353,10 @@ def _run_hybrid_cases(
         hybrid_mode=hybrid_mode,
         xor_code=xor_code,
         sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
+        rollback_extra_steps=rollback_extra_steps,
+        rollback_max_total_steps=rollback_max_total_steps,
+        rollback_max_per_position=rollback_max_per_position,
+        rollback_stop_after_no_progress=rollback_stop_after_no_progress,
     )
     xor_config = XorParityConfig(
         data_packets_per_stripe=4,
@@ -905,6 +1388,9 @@ def _run_hybrid_cases(
         sparse_xor_seed=sparse_xor_seed,
         editable_update_mode=editable_update_mode,
         hash_constraint_schedule=hash_constraint_schedule,
+        rollback_extra_steps=rollback_extra_steps,
+        rollback_max_total_steps=rollback_max_total_steps,
+        rollback_max_per_position=rollback_max_per_position,
     )
     manifest = _manifest(
         run_id=run_id,
@@ -926,6 +1412,10 @@ def _run_hybrid_cases(
         xor_code=xor_code,
         sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
         sparse_xor_enable_linear_solve=sparse_xor_enable_linear_solve,
+        rollback_extra_steps=rollback_extra_steps,
+        rollback_max_total_steps=rollback_max_total_steps,
+        rollback_max_per_position=rollback_max_per_position,
+        rollback_stop_after_no_progress=rollback_stop_after_no_progress,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -962,6 +1452,10 @@ def _run_hybrid_cases(
             sparse_config=sparse_config,
             sparse_linear_solve_enabled=sparse_xor_enable_linear_solve,
             sparse_max_component_unknowns=sparse_xor_max_component_unknowns,
+            rollback_extra_steps=rollback_extra_steps,
+            rollback_max_total_steps=rollback_max_total_steps,
+            rollback_max_per_position=rollback_max_per_position,
+            rollback_stop_after_no_progress=rollback_stop_after_no_progress,
             source_layout=source_layout,
             wire_interleaving=wire_interleaving,
             channel_config=case_channel_config,
@@ -1161,6 +1655,33 @@ def _result_row(
         "iterative_peel_recovered_count_by_step": _csv_sequence(
             diagnostics.get("iterative_peel_recovered_count_by_step", ())
         ),
+        "rollback_enabled": diagnostics.get("rollback_enabled", False),
+        "rollback_event_count": diagnostics.get("rollback_event_count", 0),
+        "rollback_conflict_equation_count": diagnostics.get(
+            "rollback_conflict_equation_count",
+            0,
+        ),
+        "rollback_positions_count": diagnostics.get("rollback_positions_count", 0),
+        "rollback_positions": _csv_sequence(diagnostics.get("rollback_positions", ())),
+        "rollback_single_suspect_count": diagnostics.get("rollback_single_suspect_count", 0),
+        "rollback_multi_suspect_count": diagnostics.get("rollback_multi_suspect_count", 0),
+        "rollback_banned_token_count": diagnostics.get("rollback_banned_token_count", 0),
+        "rollback_banned_tokens_by_position": json.dumps(
+            diagnostics.get("rollback_banned_tokens_by_position", {}),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "rollback_max_per_position_hits": diagnostics.get("rollback_max_per_position_hits", 0),
+        "rollback_extra_steps_used": diagnostics.get("rollback_extra_steps_used", 0),
+        "rollback_remaining_masks_after_budget": diagnostics.get(
+            "rollback_remaining_masks_after_budget",
+            0,
+        ),
+        "rollback_provenance_invalidated_count": diagnostics.get(
+            "rollback_provenance_invalidated_count",
+            0,
+        ),
+        "rollback_no_progress_stop": diagnostics.get("rollback_no_progress_stop", False),
         "parity_candidate_rejections": case.parity_filter_diagnostics.get(
             "parity_candidate_rejections",
             0,
@@ -1197,6 +1718,10 @@ def _manifest(
     xor_code: str,
     sparse_xor_max_component_unknowns: int,
     sparse_xor_enable_linear_solve: bool,
+    rollback_extra_steps: int,
+    rollback_max_total_steps: int,
+    rollback_max_per_position: int,
+    rollback_stop_after_no_progress: int,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
@@ -1234,6 +1759,10 @@ def _manifest(
             "parity_filter_fallback": parity_filter_fallback,
             "sparse_xor_max_component_unknowns": sparse_xor_max_component_unknowns,
             "sparse_xor_enable_linear_solve": sparse_xor_enable_linear_solve,
+            "rollback_extra_steps": rollback_extra_steps,
+            "rollback_max_total_steps": rollback_max_total_steps,
+            "rollback_max_per_position": rollback_max_per_position,
+            "rollback_stop_after_no_progress": rollback_stop_after_no_progress,
             "protection_mode": HYBRID_PROTECTION_MODE,
             "oracle_hash_metadata": False,
             "source_layout": source_layout.to_dict(),
@@ -1273,6 +1802,9 @@ def _run_id(
     sparse_xor_seed: int,
     editable_update_mode: str,
     hash_constraint_schedule: str,
+    rollback_extra_steps: int,
+    rollback_max_total_steps: int,
+    rollback_max_per_position: int,
 ) -> str:
     lengths = "-".join(str(length) for length in sample_lengths)
     source_chunk = source_layout.chunk_size if source_layout.chunk_size is not None else "default"
@@ -1283,7 +1815,8 @@ def _run_id(
         f"seed{seed}|source-{source_layout.mode}-chunk{source_chunk}|"
         f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}|"
         f"channel-{channel_config.mode}|update-{editable_update_mode}|"
-        f"hash-schedule-{hash_constraint_schedule}|sparse-seed{sparse_xor_seed}"
+        f"hash-schedule-{hash_constraint_schedule}|sparse-seed{sparse_xor_seed}|"
+        f"rollback-extra{rollback_extra_steps}-max{rollback_max_total_steps}-perpos{rollback_max_per_position}"
     )
 
 
@@ -1327,6 +1860,10 @@ def _validate_common_config(
     hybrid_mode: str,
     xor_code: str = XOR_CODE_STRIPE,
     sparse_xor_max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
+    rollback_extra_steps: int = DEFAULT_ROLLBACK_EXTRA_STEPS,
+    rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
+    rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
+    rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
 ) -> None:
     if not sample_lengths:
         raise ValueError("sample_lengths must be non-empty")
@@ -1349,6 +1886,14 @@ def _validate_common_config(
     _validate_xor_code(xor_code)
     if sparse_xor_max_component_unknowns <= 0:
         raise ValueError("sparse_xor_max_component_unknowns must be positive")
+    if rollback_extra_steps < 0:
+        raise ValueError("rollback_extra_steps must be non-negative")
+    if rollback_max_total_steps <= 0:
+        raise ValueError("rollback_max_total_steps must be positive")
+    if rollback_max_per_position <= 0:
+        raise ValueError("rollback_max_per_position must be positive")
+    if rollback_stop_after_no_progress < 0:
+        raise ValueError("rollback_stop_after_no_progress must be non-negative")
 
 
 def _validate_hybrid_mode(hybrid_mode: str) -> None:
@@ -1368,6 +1913,11 @@ def _validate_iterative_peel_decoder_config(config: DiffusionDecodingConfig) -> 
         raise ValueError("hybrid_mode='iterative_peel' requires editable_update_mode='commit_once'")
     if config.hash_constraint_schedule != HASH_CONSTRAINT_ALWAYS:
         raise ValueError("hybrid_mode='iterative_peel' requires hash_constraint_schedule='always'")
+
+
+def _validate_iterative_rollback_config(*, xor_code: str) -> None:
+    if xor_code != XOR_CODE_SPARSE_FOUNTAIN:
+        raise ValueError("hybrid_mode='iterative_rollback' requires xor_code='sparse_fountain'")
 
 
 def _known_tokens_from_decoder_state(
@@ -1556,6 +2106,65 @@ def _empty_filter_diagnostics() -> dict[str, Any]:
     }
 
 
+def _iterative_peel_style_diagnostics(
+    *,
+    enabled: bool,
+    call_count: int,
+    recovered_tokens: Mapping[int, int],
+    per_step_recovered_count: Sequence[int],
+    conflicts: Sequence[XorPeelConflict],
+    enable_linear_solve: bool,
+    linear_solver_diagnostics: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "iterative_peel_enabled": enabled,
+        "iterative_peel_passes": call_count,
+        "iterative_peel_recovered_count": len(recovered_tokens),
+        "iterative_peel_recovered_positions": tuple(sorted(recovered_tokens)),
+        "iterative_peel_recovered_count_by_step": tuple(per_step_recovered_count),
+        "iterative_peel_conflict_count": len(conflicts),
+        "iterative_linear_solver_enabled": enable_linear_solve,
+        "iterative_linear_solver_components_seen": linear_solver_diagnostics[
+            "linear_solver_components_seen"
+        ],
+        "iterative_linear_solver_components_solved": linear_solver_diagnostics[
+            "linear_solver_components_solved"
+        ],
+        "iterative_linear_solver_tokens_recovered": linear_solver_diagnostics[
+            "linear_solver_tokens_recovered"
+        ],
+        "iterative_linear_solver_rank_deficient_count": linear_solver_diagnostics[
+            "linear_solver_rank_deficient_count"
+        ],
+        "iterative_linear_solver_validation_conflict_count": linear_solver_diagnostics[
+            "linear_solver_validation_conflict_count"
+        ],
+        "iterative_linear_solver_too_large_count": linear_solver_diagnostics[
+            "linear_solver_too_large_count"
+        ],
+        "iterative_peel_hash_conflict_count": sum(
+            conflict.reason in {
+                "parity_hash_conflict",
+                "hash_metadata_without_token_hash_map",
+            }
+            for conflict in conflicts
+        ),
+        "iterative_peel_special_token_conflict_count": sum(
+            conflict.reason == "solved_token_is_banned"
+            for conflict in conflicts
+        ),
+        "iterative_peel_vocab_conflict_count": sum(
+            conflict.reason in {
+                "solved_token_negative",
+                "solved_token_outside_vocab",
+                "solved_token_outside_hash_vocab",
+            }
+            for conflict in conflicts
+        ),
+        "iterative_peel_conflicts": [conflict.to_dict() for conflict in conflicts],
+    }
+
+
 def _empty_linear_solver_diagnostics(*, enabled: bool = False) -> dict[str, Any]:
     return {
         "linear_solver_enabled": enabled,
@@ -1635,6 +2244,21 @@ def _empty_iterative_peel_diagnostics() -> dict[str, Any]:
         "iterative_peel_special_token_conflict_count": 0,
         "iterative_peel_vocab_conflict_count": 0,
         "iterative_peel_conflicts": (),
+        "rollback_enabled": False,
+        "rollback_event_count": 0,
+        "rollback_conflict_equation_count": 0,
+        "rollback_positions_count": 0,
+        "rollback_positions": (),
+        "rollback_single_suspect_count": 0,
+        "rollback_multi_suspect_count": 0,
+        "rollback_banned_token_count": 0,
+        "rollback_banned_tokens_by_position": {},
+        "rollback_max_per_position_hits": 0,
+        "rollback_extra_steps_used": 0,
+        "rollback_remaining_masks_after_budget": 0,
+        "rollback_provenance_invalidated_count": 0,
+        "rollback_no_progress_stop": False,
+        "rollback_events": (),
     }
 
 

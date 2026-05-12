@@ -626,6 +626,97 @@ def test_post_commit_hook_rejects_overwriting_committed_tokens() -> None:
         )
 
 
+def test_position_specific_ban_excludes_only_that_position_after_rollback() -> None:
+    plan = build_reconstruction_plan(total_tokens=2, received_packets=[])
+    model = StepwiseProposalModel(
+        choices_by_step={
+            (0, 0): 10,
+            (1, 0): 10,
+            (0, 1): 10,
+        },
+        default_token_id=11,
+    )
+
+    class RollbackBanHook:
+        rollback_enabled = True
+        rollback_extra_steps = 1
+        rollback_max_total_steps = 2
+        rollback_stop_after_no_progress = 0
+
+        def __call__(self, **kwargs):
+            if kwargs["step"] == 0:
+                return {
+                    "rollback_positions": (0,),
+                    "position_banned_tokens": {0: (10,)},
+                }
+            return {}
+
+        def record_decode_outcome(self, **kwargs):
+            pass
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=32,
+            steps=1,
+            block_length=2,
+        ),
+        post_commit_hook=RollbackBanHook(),
+    )
+
+    assert result.reconstructed_tokens == (3, 10)
+    position0_extra_call = [
+        call for call in model.proposal_calls
+        if call["position"] == 0 and call["step"] == 1
+    ][0]
+    assert 10 not in position0_extra_call["candidate_token_ids"]
+    assert 10 in [
+        call for call in model.proposal_calls
+        if call["position"] == 1 and call["step"] == 0
+    ][0]["candidate_token_ids"]
+
+
+def test_position_specific_ban_empty_candidates_fails_clearly() -> None:
+    plan = build_reconstruction_plan(total_tokens=1, received_packets=[])
+    model = StepwiseProposalModel({(0, 0): 3})
+
+    class BanOnlyCandidateHook:
+        rollback_enabled = True
+        rollback_extra_steps = 1
+        rollback_max_total_steps = 2
+        rollback_stop_after_no_progress = 0
+
+        def __call__(self, **kwargs):
+            if kwargs["step"] == 0:
+                return {
+                    "rollback_positions": (0,),
+                    "position_banned_tokens": {0: (3,)},
+                }
+            return {}
+
+        def record_decode_outcome(self, **kwargs):
+            pass
+
+    with pytest.raises(RuntimeError, match="position-specific bans removed all candidates"):
+        decode_masked_diffusion(
+            model=model,
+            plan=plan,
+            config=DiffusionDecodingConfig(
+                mask_token_id=0,
+                eos_token_id=1,
+                pad_token_id=2,
+                vocab_size=4,
+                steps=1,
+                block_length=1,
+            ),
+            post_commit_hook=BanOnlyCandidateHook(),
+        )
+
+
 def test_empty_hash_bucket_falls_back_and_logs_position() -> None:
     token_hash = TokenHashMap(
         hash_bits=4,

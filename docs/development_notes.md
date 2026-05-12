@@ -264,13 +264,23 @@ Hybrid modes:
   against vocab/special-token legality, promoted to fixed, and cannot be
   overwritten by later decoder steps. This first implementation is intentionally
   limited to `commit_once + always`.
+- `iterative_rollback`: experimental sparse-fountain-only mode. It keeps the
+  iterative peel behavior, then treats parity/hash conflicts as negative
+  feedback. If a conflict identifies one soft model commit, that token is
+  remasked and the exact token ID is banned at that position; if multiple soft
+  commits are implicated, all are remasked without adding bans. Received tokens
+  are trusted roots and are never rolled back. Parity-solved tokens carry
+  dependency provenance and are invalidated if one of their dependencies is
+  rolled back.
 
 Hybrid result rows include `total_overhead_ratio`, which is the sum of
 token-equivalent hash metadata overhead and XOR repair-token overhead. Compare
 hybrid rows against hash-only and XOR-only rows with this field, not the nominal
 hash/XOR labels.
 Rows also include `iterative_peel_*` diagnostics for the cooperative parity
-repair path.
+repair path. Rollback runs additionally include `rollback_*` diagnostics for
+conflict events, rolled-back positions, banned tokens, provenance invalidations,
+extra repair rounds, and masks left after the rollback budget.
 
 Sparse fountain XOR is available with `--xor-code sparse_fountain`. It is a
 Raptor/LT-inspired Sparse Fountain XOR validation path with bounded GF(2)
@@ -280,6 +290,10 @@ artifacts are audit metadata and are not charged as transmitted overhead in this
 validation layer. The solver peels first, then solves only unique small GF(2)
 components and promotes tokens only after vocab, special-token, and hash
 validation.
+
+Future TODO: add an endgame search for very small unresolved/conflicted sets
+that tries top-k hash-valid candidates and reranks combinations by parity
+satisfaction. The current rollback slice does not implement that search.
 
 LT/fountain baseline micro-eval:
 

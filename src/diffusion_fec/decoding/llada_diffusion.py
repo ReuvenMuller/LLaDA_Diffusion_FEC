@@ -158,6 +158,13 @@ class _ProposalChoice:
     top2_probability: float = 0.0
 
 
+@dataclass(frozen=True)
+class _PostCommitHookApplication:
+    fixed_tokens: dict[int, int] = field(default_factory=dict)
+    rollback_positions: tuple[int, ...] = ()
+    position_banned_tokens: dict[int, tuple[int, ...]] = field(default_factory=dict)
+
+
 def should_enforce_hash_constraint(step: int, total_steps: int, schedule: str) -> bool:
     """Return whether hash-guided positions should be bucket-constrained."""
 
@@ -214,6 +221,8 @@ def decode_masked_diffusion(
     x = _build_initial_input_ids(plan, config, prompt_tokens)
     attention_mask = [1] * len(x)
     fixed_token_ids = _build_fixed_token_ids(plan, prompt_tokens, prompt_length)
+    hook_fixed_token_positions: set[int] = set()
+    position_banned_tokens: dict[int, set[int]] = {}
     non_banned_token_ids = tuple(
         token_id for token_id in range(config.vocab_size)
         if token_id not in config.special_token_ids
@@ -268,7 +277,10 @@ def decode_masked_diffusion(
                 "post_commit_hook_used": False,
                 "post_commit_hook_calls": 0,
                 "post_commit_fixed_positions_per_step": [],
+                "post_commit_rollback_positions_per_step": [],
                 "post_commit_hook_diagnostics": _post_commit_hook_diagnostics(post_commit_hook),
+                "position_banned_token_count": 0,
+                "position_banned_tokens_by_position": {},
                 "editable_update_mode": config.editable_update_mode,
                 "hash_constraint_schedule": config.hash_constraint_schedule,
                 "hash_enforced_steps": [],
@@ -288,9 +300,33 @@ def decode_masked_diffusion(
     updated_editable_positions_per_step: list[int] = []
     post_commit_hook_calls = 0
     post_commit_fixed_positions_per_step: list[int] = []
+    post_commit_rollback_positions_per_step: list[int] = []
+    rollback_enabled = bool(getattr(post_commit_hook, "rollback_enabled", False))
+    rollback_extra_steps = _non_negative_int_attr(
+        post_commit_hook,
+        "rollback_extra_steps",
+        default=0,
+    )
+    rollback_max_total_steps = _positive_int_attr(
+        post_commit_hook,
+        "rollback_max_total_steps",
+        default=config.steps + rollback_extra_steps,
+    )
+    rollback_total_steps = config.steps
+    if rollback_enabled:
+        rollback_total_steps = min(config.steps + rollback_extra_steps, rollback_max_total_steps)
+        if rollback_total_steps < config.steps:
+            rollback_total_steps = config.steps
+    rollback_stop_after_no_progress = _non_negative_int_attr(
+        post_commit_hook,
+        "rollback_stop_after_no_progress",
+        default=0,
+    )
+    rollback_no_progress_stop = False
 
     if config.editable_update_mode == EDITABLE_UPDATE_COMMIT_ONCE:
-        for step in range(config.steps):
+        no_progress_streak = 0
+        for step in range(rollback_total_steps):
             editable_target_positions = _still_masked_target_positions(
                 x,
                 plan,
@@ -301,7 +337,9 @@ def decode_masked_diffusion(
                 break
 
             hash_enforced_steps.append(step)
-            remaining_steps = config.steps - step
+            remaining_steps = max(1, rollback_total_steps - step)
+            if step < config.steps:
+                remaining_steps = config.steps - step
             transfer_count = max(1, ceil(len(editable_target_positions) / remaining_steps))
 
             if proposal_interface_available:
@@ -318,6 +356,7 @@ def decode_masked_diffusion(
                             token_hash_map=token_hash_map,
                             non_banned_token_ids=non_banned_token_ids,
                             enforce_hash_constraint=True,
+                            position_banned_tokens=position_banned_tokens,
                             candidate_filter=candidate_filter,
                         )
                     )
@@ -342,6 +381,7 @@ def decode_masked_diffusion(
                         enforce_hash_constraint=True,
                         input_ids=tuple(x),
                         step=step,
+                        position_banned_tokens=position_banned_tokens,
                         candidate_filter=candidate_filter,
                     )
                     for target_position in editable_target_positions
@@ -377,23 +417,29 @@ def decode_masked_diffusion(
                     fallback_reasons[proposal.target_position] = "hash_bucket_empty_after_bans"
 
             post_commit_stats: list[ConfidenceStat] = []
+            hook_result = _PostCommitHookApplication()
             if post_commit_hook_available:
                 post_commit_hook_calls += 1
-                fixed_by_hook = _apply_post_commit_hook(
+                hook_result = _apply_post_commit_hook(
                     post_commit_hook=post_commit_hook,
                     x=x,
                     plan=plan,
                     config=config,
                     prompt_length=prompt_length,
                     fixed_token_ids=fixed_token_ids,
+                    hook_fixed_token_positions=hook_fixed_token_positions,
+                    position_banned_tokens=position_banned_tokens,
                     step=step,
                     committed_positions=tuple(
                         proposal.target_position
                         for proposal in committed
                     ),
                 )
-                post_commit_fixed_positions_per_step.append(len(fixed_by_hook))
-                for target_position, token_id in fixed_by_hook.items():
+                post_commit_fixed_positions_per_step.append(len(hook_result.fixed_tokens))
+                post_commit_rollback_positions_per_step.append(len(hook_result.rollback_positions))
+                for target_position in hook_result.rollback_positions:
+                    stats_by_position.pop(target_position, None)
+                for target_position, token_id in hook_result.fixed_tokens.items():
                     entry = plan.entries[target_position]
                     stat = editable_confidence_stat(
                         entry,
@@ -407,6 +453,7 @@ def decode_masked_diffusion(
                     post_commit_stats.append(stat)
             else:
                 post_commit_fixed_positions_per_step.append(0)
+                post_commit_rollback_positions_per_step.append(0)
 
             updated_editable_positions_per_step.append(
                 len(committed) + len(post_commit_stats)
@@ -427,6 +474,17 @@ def decode_masked_diffusion(
                     ],
                 )
             )
+            if rollback_enabled and step >= config.steps:
+                if still_masked_count >= len(editable_target_positions):
+                    no_progress_streak += 1
+                else:
+                    no_progress_streak = 0
+                if (
+                    rollback_stop_after_no_progress
+                    and no_progress_streak >= rollback_stop_after_no_progress
+                ):
+                    rollback_no_progress_stop = True
+                    break
     else:
         editable_target_positions = _still_masked_target_positions(
             x,
@@ -459,6 +517,7 @@ def decode_masked_diffusion(
                             token_hash_map=token_hash_map,
                             non_banned_token_ids=non_banned_token_ids,
                             enforce_hash_constraint=enforce_hash,
+                            position_banned_tokens=position_banned_tokens,
                             candidate_filter=candidate_filter,
                         )
                     )
@@ -483,6 +542,7 @@ def decode_masked_diffusion(
                         enforce_hash_constraint=enforce_hash,
                         input_ids=tuple(x),
                         step=step,
+                        position_banned_tokens=position_banned_tokens,
                         candidate_filter=candidate_filter,
                     )
                     for target_position in editable_target_positions
@@ -512,6 +572,7 @@ def decode_masked_diffusion(
 
             updated_editable_positions_per_step.append(len(proposals))
             post_commit_fixed_positions_per_step.append(0)
+            post_commit_rollback_positions_per_step.append(0)
             step_restored = _restore_fixed_tokens(x, fixed_token_ids)
             restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
             still_masked_count = len(
@@ -536,7 +597,8 @@ def decode_masked_diffusion(
         config.mask_token_id,
     )
     if remaining_masked:
-        raise RuntimeError(f"decoder left masked target positions unfilled: {remaining_masked}")
+        if not rollback_enabled:
+            raise RuntimeError(f"decoder left masked target positions unfilled: {remaining_masked}")
     _validate_fixed_tokens_preserved(x, fixed_token_ids)
     if (
         config.editable_update_mode == EDITABLE_UPDATE_RESAMPLE_EACH_STEP
@@ -556,6 +618,27 @@ def decode_masked_diffusion(
         )
 
     reconstructed_tokens = tuple(x[prompt_length:])
+    for position in range(plan.total_tokens):
+        if position not in stats_by_position:
+            entry = plan.entries[position]
+            stats_by_position[position] = ConfidenceStat(
+                position=entry.position,
+                state=entry.state,
+                selected_token_id=x[prompt_length + position],
+                top1_probability=0.0,
+                top2_probability=0.0,
+                margin=0.0,
+                candidate_count=0,
+                commit_step=None,
+                was_fixed=False,
+                hash_value=entry.hash_value,
+            )
+    _record_post_commit_hook_decode_outcome(
+        post_commit_hook,
+        extra_steps_used=max(0, len(step_summaries) - config.steps),
+        remaining_masked_count=len(remaining_masked),
+        no_progress_stop=rollback_no_progress_stop,
+    )
     ordered_stats = tuple(stats_by_position[position] for position in range(plan.total_tokens))
     candidate_filter_diagnostics = _candidate_filter_diagnostics(candidate_filter)
     post_commit_hook_diagnostics = _post_commit_hook_diagnostics(post_commit_hook)
@@ -595,7 +678,13 @@ def decode_masked_diffusion(
             "post_commit_hook_used": post_commit_hook_calls > 0,
             "post_commit_hook_calls": post_commit_hook_calls,
             "post_commit_fixed_positions_per_step": tuple(post_commit_fixed_positions_per_step),
+            "post_commit_rollback_positions_per_step": tuple(post_commit_rollback_positions_per_step),
             "post_commit_hook_diagnostics": post_commit_hook_diagnostics,
+            "position_banned_token_count": sum(len(tokens) for tokens in position_banned_tokens.values()),
+            "position_banned_tokens_by_position": {
+                position: tuple(sorted(tokens))
+                for position, tokens in sorted(position_banned_tokens.items())
+            },
             "editable_update_mode": config.editable_update_mode,
             "hash_constraint_schedule": config.hash_constraint_schedule,
             "hash_enforced_steps": tuple(hash_enforced_steps),
@@ -685,6 +774,20 @@ def _validate_fixed_tokens_preserved(x: Sequence[int], fixed_token_ids: dict[int
         raise RuntimeError(f"decoder changed fixed token positions: {changed}")
 
 
+def _non_negative_int_attr(obj: object | None, name: str, *, default: int) -> int:
+    value = int(getattr(obj, name, default))
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
+def _positive_int_attr(obj: object | None, name: str, *, default: int) -> int:
+    value = int(getattr(obj, name, default))
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
 def _validate_final_hash_constraints(
     *,
     x: Sequence[int],
@@ -723,6 +826,7 @@ def _proposal_for_position(
     enforce_hash_constraint: bool,
     input_ids: tuple[int, ...],
     step: int,
+    position_banned_tokens: dict[int, set[int]],
     candidate_filter: object | None,
 ) -> _Proposal:
     candidates, used_fallback = _candidate_token_ids(
@@ -731,6 +835,11 @@ def _proposal_for_position(
         token_hash_map=token_hash_map,
         non_banned_token_ids=non_banned_token_ids,
         enforce_hash_constraint=enforce_hash_constraint,
+    )
+    candidates = _apply_position_bans(
+        entry=entry,
+        candidate_token_ids=candidates,
+        position_banned_tokens=position_banned_tokens,
     )
     candidates = _apply_candidate_filter(
         candidate_filter=candidate_filter,
@@ -766,6 +875,7 @@ def _proposal_from_model_hook(
     token_hash_map: TokenHashMap | None,
     non_banned_token_ids: tuple[int, ...],
     enforce_hash_constraint: bool,
+    position_banned_tokens: dict[int, set[int]],
     candidate_filter: object | None,
 ) -> _Proposal:
     candidates, used_fallback = _candidate_token_ids(
@@ -774,6 +884,11 @@ def _proposal_from_model_hook(
         token_hash_map=token_hash_map,
         non_banned_token_ids=non_banned_token_ids,
         enforce_hash_constraint=enforce_hash_constraint,
+    )
+    candidates = _apply_position_bans(
+        entry=entry,
+        candidate_token_ids=candidates,
+        position_banned_tokens=position_banned_tokens,
     )
     candidates = _apply_candidate_filter(
         candidate_filter=candidate_filter,
@@ -862,6 +977,23 @@ def _apply_candidate_filter(
     return filtered
 
 
+def _apply_position_bans(
+    *,
+    entry: ReconstructionEntry,
+    candidate_token_ids: tuple[int, ...],
+    position_banned_tokens: dict[int, set[int]],
+) -> tuple[int, ...]:
+    banned = position_banned_tokens.get(entry.position)
+    if not banned:
+        return candidate_token_ids
+    filtered = tuple(token_id for token_id in candidate_token_ids if token_id not in banned)
+    if not filtered:
+        raise RuntimeError(
+            f"position-specific bans removed all candidates for position {entry.position}"
+        )
+    return filtered
+
+
 def _candidate_filter_diagnostics(candidate_filter: object | None) -> dict[str, Any]:
     if candidate_filter is None:
         return {}
@@ -892,6 +1024,22 @@ def _post_commit_hook_diagnostics(post_commit_hook: object | None) -> dict[str, 
     return {}
 
 
+def _record_post_commit_hook_decode_outcome(
+    post_commit_hook: object | None,
+    *,
+    extra_steps_used: int,
+    remaining_masked_count: int,
+    no_progress_stop: bool,
+) -> None:
+    record = getattr(post_commit_hook, "record_decode_outcome", None)
+    if callable(record):
+        record(
+            extra_steps_used=extra_steps_used,
+            remaining_masked_count=remaining_masked_count,
+            no_progress_stop=no_progress_stop,
+        )
+
+
 def _apply_post_commit_hook(
     *,
     post_commit_hook: object,
@@ -900,9 +1048,11 @@ def _apply_post_commit_hook(
     config: DiffusionDecodingConfig,
     prompt_length: int,
     fixed_token_ids: dict[int, int],
+    hook_fixed_token_positions: set[int],
+    position_banned_tokens: dict[int, set[int]],
     step: int,
     committed_positions: tuple[int, ...],
-) -> dict[int, int]:
+) -> _PostCommitHookApplication:
     if not callable(post_commit_hook):
         raise TypeError("post_commit_hook must be callable")
     result = post_commit_hook(
@@ -915,17 +1065,61 @@ def _apply_post_commit_hook(
         config=config,
     )
     if result is None:
-        return {}
+        return _PostCommitHookApplication()
+    rollback_positions: tuple[int, ...] = ()
+    raw_position_bans: dict[Any, Any] = {}
     fixed_tokens = result
     if isinstance(result, dict) and (
         "fixed_tokens" in result
         or "recovered_tokens" in result
+        or "rollback_positions" in result
+        or "position_banned_tokens" in result
+        or "position_bans" in result
     ):
         fixed_tokens = result.get("fixed_tokens", result.get("recovered_tokens"))
+        rollback_positions = tuple(int(position) for position in result.get("rollback_positions", ()))
+        raw_position_bans = result.get("position_banned_tokens", result.get("position_bans", {})) or {}
     if fixed_tokens is None:
-        return {}
+        fixed_tokens = {}
     if not isinstance(fixed_tokens, dict):
         fixed_tokens = dict(fixed_tokens)
+
+    applied_rollbacks: list[int] = []
+    for target_position in rollback_positions:
+        if target_position < 0 or target_position >= plan.total_tokens:
+            raise ValueError("post_commit_hook returned a rollback position outside the plan")
+        full_position = prompt_length + target_position
+        existing_fixed = fixed_token_ids.get(full_position)
+        if existing_fixed is not None and full_position not in hook_fixed_token_positions:
+            raise RuntimeError("post_commit_hook attempted to rollback a fixed token")
+        if full_position in hook_fixed_token_positions:
+            fixed_token_ids.pop(full_position, None)
+            hook_fixed_token_positions.discard(full_position)
+        if x[full_position] != config.mask_token_id:
+            x[full_position] = config.mask_token_id
+        applied_rollbacks.append(target_position)
+
+    applied_bans: dict[int, tuple[int, ...]] = {}
+    for raw_position, raw_token_ids in raw_position_bans.items():
+        target_position = int(raw_position)
+        if target_position < 0 or target_position >= plan.total_tokens:
+            raise ValueError("post_commit_hook returned a ban position outside the plan")
+        full_position = prompt_length + target_position
+        existing_fixed = fixed_token_ids.get(full_position)
+        if existing_fixed is not None and full_position not in hook_fixed_token_positions:
+            raise RuntimeError("post_commit_hook attempted to ban a fixed token")
+        if isinstance(raw_token_ids, int):
+            token_ids = (raw_token_ids,)
+        else:
+            token_ids = tuple(raw_token_ids)
+        normalized: list[int] = []
+        for raw_token_id in token_ids:
+            token_id = int(raw_token_id)
+            config._validate_token_id(token_id, "post_commit_hook banned token_id")
+            position_banned_tokens.setdefault(target_position, set()).add(token_id)
+            normalized.append(token_id)
+        if normalized:
+            applied_bans[target_position] = tuple(sorted(set(normalized)))
 
     applied: dict[int, int] = {}
     for raw_position, raw_token_id in fixed_tokens.items():
@@ -940,6 +1134,7 @@ def _apply_post_commit_hook(
         if x[full_position] != config.mask_token_id:
             if x[full_position] == token_id:
                 fixed_token_ids[full_position] = token_id
+                hook_fixed_token_positions.add(full_position)
                 continue
             raise RuntimeError("post_commit_hook attempted to overwrite a committed token")
         config._validate_token_id(token_id, "post_commit_hook token_id")
@@ -947,8 +1142,13 @@ def _apply_post_commit_hook(
             raise RuntimeError("post_commit_hook returned a banned or special token")
         x[full_position] = token_id
         fixed_token_ids[full_position] = token_id
+        hook_fixed_token_positions.add(full_position)
         applied[target_position] = token_id
-    return applied
+    return _PostCommitHookApplication(
+        fixed_tokens=applied,
+        rollback_positions=tuple(sorted(set(applied_rollbacks))),
+        position_banned_tokens=applied_bans,
+    )
 
 
 def _candidate_token_ids(

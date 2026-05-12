@@ -25,6 +25,10 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
             "hash_metadata_token_equivalent_overhead_ratio": "0.25",
             "actual_repair_token_overhead_ratio": "0.0",
             "total_overhead_ratio": "0.25",
+            "rollback_event_count": "2",
+            "rollback_positions_count": "1",
+            "rollback_banned_token_count": "1",
+            "rollback_provenance_invalidated_count": "0",
         },
         {
             "strategy": "A",
@@ -42,6 +46,10 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
             "hash_metadata_token_equivalent_overhead_ratio": "0.25",
             "actual_repair_token_overhead_ratio": "0.0",
             "total_overhead_ratio": "0.25",
+            "rollback_event_count": "4",
+            "rollback_positions_count": "3",
+            "rollback_banned_token_count": "1",
+            "rollback_provenance_invalidated_count": "2",
         },
     ]
 
@@ -59,6 +67,10 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
     assert row["mean_run_wall_time_sec"] == 15.0
     assert row["mean_hash_metadata_token_equivalent_overhead_ratio"] == 0.25
     assert row["mean_total_overhead_ratio"] == 0.25
+    assert row["mean_rollback_event_count"] == 3.0
+    assert row["mean_rollback_positions_count"] == 2.0
+    assert row["mean_rollback_banned_token_count"] == 1.0
+    assert row["mean_rollback_provenance_invalidated_count"] == 1.0
     assert row["exact_match_rate"] == 0.5
     assert row["known_position_preserved_rate"] == 1.0
 

@@ -17,6 +17,7 @@ from diffusion_fec.experiments.llada_micro_eval import (
 )
 from diffusion_fec.experiments.hybrid_eval import (
     HYBRID_MODE_ITERATIVE_PEEL,
+    HYBRID_MODE_ITERATIVE_ROLLBACK,
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
     XOR_CODE_SPARSE_FOUNTAIN,
@@ -36,6 +37,7 @@ __all__ = [
     "MICRO_EVAL_MODEL_HASH",
     "MICRO_EVAL_MODEL_ONLY",
     "HYBRID_MODE_ITERATIVE_PEEL",
+    "HYBRID_MODE_ITERATIVE_ROLLBACK",
     "HYBRID_MODE_PARITY_FILTER",
     "HYBRID_MODE_PRE_PEEL_ONLY",
     "XOR_CODE_SPARSE_FOUNTAIN",

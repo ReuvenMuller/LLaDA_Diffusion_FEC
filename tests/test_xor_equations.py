@@ -67,6 +67,9 @@ def test_peeling_recovers_single_unknown() -> None:
     assert result.recovered_tokens == {2: 12}
     assert result.known_tokens[2] == 12
     assert result.peel_iteration_count == 1
+    assert result.recovery_provenance[2].method == "peel"
+    assert result.recovery_provenance[2].equation_ids == ("e0",)
+    assert result.recovery_provenance[2].dependency_positions == (0,)
 
 
 def test_repeated_peeling_unlocks_later_equations() -> None:
@@ -117,6 +120,8 @@ def test_hash_validation_rejects_conflicting_peeled_tokens() -> None:
     assert result.recovered_tokens == {}
     assert result.conflict_count == 1
     assert result.conflicts[0].reason == "parity_hash_conflict"
+    assert result.conflicts[0].equation_positions == (0, 2)
+    assert result.conflicts[0].dependency_positions == (0,)
 
 
 def test_parity_candidate_filter_rejects_incompatible_candidates() -> None:

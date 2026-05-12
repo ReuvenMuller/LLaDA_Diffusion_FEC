@@ -73,6 +73,20 @@ class XorPeelConflict:
     reason: str
     expected_hash_value: int | None = None
     solved_hash_value: int | None = None
+    equation_positions: tuple[int, ...] = field(default_factory=tuple)
+    dependency_positions: tuple[int, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "equation_positions",
+            tuple(int(position) for position in self.equation_positions),
+        )
+        object.__setattr__(
+            self,
+            "dependency_positions",
+            tuple(int(position) for position in self.dependency_positions),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +96,42 @@ class XorPeelConflict:
             "reason": self.reason,
             "expected_hash_value": self.expected_hash_value,
             "solved_hash_value": self.solved_hash_value,
+            "equation_positions": list(self.equation_positions),
+            "dependency_positions": list(self.dependency_positions),
+        }
+
+
+@dataclass(frozen=True)
+class XorRecoveryProvenance:
+    """How a parity solve recovered one token."""
+
+    position: int
+    token_id: int
+    method: str
+    equation_ids: tuple[str, ...]
+    dependency_positions: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "position", int(self.position))
+        object.__setattr__(self, "token_id", int(self.token_id))
+        object.__setattr__(
+            self,
+            "equation_ids",
+            tuple(str(equation_id) for equation_id in self.equation_ids),
+        )
+        object.__setattr__(
+            self,
+            "dependency_positions",
+            tuple(int(position) for position in self.dependency_positions),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "position": self.position,
+            "token_id": self.token_id,
+            "method": self.method,
+            "equation_ids": list(self.equation_ids),
+            "dependency_positions": list(self.dependency_positions),
         }
 
 
@@ -94,6 +144,7 @@ class XorPeelResult:
     conflicts: tuple[XorPeelConflict, ...] = field(default_factory=tuple)
     peel_iteration_count: int = 0
     linear_solver_diagnostics: dict[str, Any] = field(default_factory=dict)
+    recovery_provenance: dict[int, XorRecoveryProvenance] = field(default_factory=dict)
 
     @property
     def recovered_count(self) -> int:
@@ -112,6 +163,10 @@ class XorPeelResult:
             "recovered_count": self.recovered_count,
             "conflict_count": self.conflict_count,
             "linear_solver_diagnostics": dict(self.linear_solver_diagnostics),
+            "recovery_provenance": {
+                str(position): provenance.to_dict()
+                for position, provenance in sorted(self.recovery_provenance.items())
+            },
         }
 
 
@@ -242,6 +297,7 @@ def peel_xor_equations(
 
     known = {int(position): int(token_id) for position, token_id in known_tokens.items()}
     recovered: dict[int, int] = {}
+    recovery_provenance: dict[int, XorRecoveryProvenance] = {}
     conflicts: list[XorPeelConflict] = []
     hash_metadata = dict(hash_metadata or {})
     banned = {int(token_id) for token_id in (banned_token_ids or ())}
@@ -288,6 +344,13 @@ def peel_xor_equations(
 
             known[position] = solved_token_id
             recovered[position] = solved_token_id
+            recovery_provenance[position] = XorRecoveryProvenance(
+                position=position,
+                token_id=solved_token_id,
+                method="peel",
+                equation_ids=(equation.equation_id,),
+                dependency_positions=_equation_dependency_positions(equation, position),
+            )
             progressed = True
 
         if not progressed:
@@ -299,6 +362,7 @@ def peel_xor_equations(
         recovered_tokens=recovered,
         conflicts=tuple(conflicts),
         peel_iteration_count=iteration_count,
+        recovery_provenance=recovery_provenance,
     )
 
 
@@ -319,6 +383,7 @@ def solve_xor_equations(
         raise ValueError("max_component_unknowns must be positive")
     known = {int(position): int(token_id) for position, token_id in known_tokens.items()}
     recovered: dict[int, int] = {}
+    recovery_provenance: dict[int, XorRecoveryProvenance] = {}
     conflicts: list[XorPeelConflict] = []
     peel_iterations = 0
     diagnostics = {
@@ -347,6 +412,13 @@ def solve_xor_equations(
         }
         known.update(peel.known_tokens)
         recovered.update(new_peel_tokens)
+        recovery_provenance.update(
+            {
+                position: peel.recovery_provenance[position]
+                for position in new_peel_tokens
+                if position in peel.recovery_provenance
+            }
+        )
         peel_iterations += peel.peel_iteration_count
         _append_unique_conflicts(conflicts, peel.conflicts)
 
@@ -356,6 +428,7 @@ def solve_xor_equations(
             equations=equations,
             known_tokens=known,
             recovered_tokens=recovered,
+            recovery_provenance=recovery_provenance,
             conflicts=conflicts,
             hash_metadata=dict(hash_metadata or {}),
             token_hash_map=token_hash_map,
@@ -373,6 +446,7 @@ def solve_xor_equations(
         conflicts=tuple(conflicts),
         peel_iteration_count=peel_iterations,
         linear_solver_diagnostics=diagnostics,
+        recovery_provenance=recovery_provenance,
     )
 
 
@@ -420,6 +494,7 @@ def _solve_linear_components_once(
     equations: Sequence[XorTokenEquation],
     known_tokens: dict[int, int],
     recovered_tokens: dict[int, int],
+    recovery_provenance: dict[int, XorRecoveryProvenance],
     conflicts: list[XorPeelConflict],
     hash_metadata: Mapping[int, int],
     token_hash_map: TokenHashMap | None,
@@ -444,6 +519,7 @@ def _solve_linear_components_once(
             diagnostics["linear_solver_rank_deficient_count"] += 1
             continue
         component_conflicts: list[XorPeelConflict] = []
+        component_equation_ids = tuple(equation.equation_id for equation in component_equations)
         for position, solved_token_id in solution.items():
             conflict = _legality_conflict(
                 equation=component_equations[0],
@@ -461,6 +537,8 @@ def _solve_linear_components_once(
                         reason=conflict.reason,
                         expected_hash_value=conflict.expected_hash_value,
                         solved_hash_value=conflict.solved_hash_value,
+                        equation_positions=conflict.equation_positions,
+                        dependency_positions=conflict.dependency_positions,
                     )
                 )
                 continue
@@ -480,6 +558,8 @@ def _solve_linear_components_once(
                         reason=conflict.reason,
                         expected_hash_value=conflict.expected_hash_value,
                         solved_hash_value=conflict.solved_hash_value,
+                        equation_positions=conflict.equation_positions,
+                        dependency_positions=conflict.dependency_positions,
                     )
                 )
 
@@ -497,6 +577,21 @@ def _solve_linear_components_once(
             continue
         known_tokens.update(new_tokens)
         recovered_tokens.update(new_tokens)
+        recovery_provenance.update(
+            {
+                position: XorRecoveryProvenance(
+                    position=position,
+                    token_id=token_id,
+                    method="linear",
+                    equation_ids=component_equation_ids,
+                    dependency_positions=_component_dependency_positions(
+                        equations=component_equations,
+                        position=position,
+                    ),
+                )
+                for position, token_id in new_tokens.items()
+            }
+        )
         diagnostics["linear_solver_components_solved"] += 1
         diagnostics["linear_solver_tokens_recovered"] += len(new_tokens)
         progressed = True
@@ -615,6 +710,31 @@ def _append_unique_conflicts(
     for conflict in new_conflicts:
         if conflict not in conflicts:
             conflicts.append(conflict)
+
+
+def _equation_dependency_positions(
+    equation: XorTokenEquation,
+    position: int,
+) -> tuple[int, ...]:
+    return tuple(
+        other_position
+        for other_position in equation.positions
+        if other_position != position
+    )
+
+
+def _component_dependency_positions(
+    *,
+    equations: Sequence[XorTokenEquation],
+    position: int,
+) -> tuple[int, ...]:
+    dependencies = {
+        other_position
+        for equation in equations
+        for other_position in equation.positions
+        if other_position != position
+    }
+    return tuple(sorted(dependencies))
 
 
 class ParityCandidateFilter:
@@ -761,6 +881,8 @@ def _hash_conflict(
             solved_token_id=solved_token_id,
             reason="hash_metadata_without_token_hash_map",
             expected_hash_value=expected_hash,
+            equation_positions=equation.positions,
+            dependency_positions=_equation_dependency_positions(equation, position),
         )
     try:
         solved_hash = token_hash_map.bucket_for_token(solved_token_id)
@@ -771,6 +893,8 @@ def _hash_conflict(
             solved_token_id=solved_token_id,
             reason="solved_token_outside_hash_vocab",
             expected_hash_value=expected_hash,
+            equation_positions=equation.positions,
+            dependency_positions=_equation_dependency_positions(equation, position),
         )
     if solved_hash != expected_hash:
         return XorPeelConflict(
@@ -780,6 +904,8 @@ def _hash_conflict(
             reason="parity_hash_conflict",
             expected_hash_value=expected_hash,
             solved_hash_value=solved_hash,
+            equation_positions=equation.positions,
+            dependency_positions=_equation_dependency_positions(equation, position),
         )
     return None
 
@@ -798,6 +924,8 @@ def _legality_conflict(
             position=position,
             solved_token_id=solved_token_id,
             reason="solved_token_negative",
+            equation_positions=equation.positions,
+            dependency_positions=_equation_dependency_positions(equation, position),
         )
     if vocab_size is not None and solved_token_id >= vocab_size:
         return XorPeelConflict(
@@ -805,6 +933,8 @@ def _legality_conflict(
             position=position,
             solved_token_id=solved_token_id,
             reason="solved_token_outside_vocab",
+            equation_positions=equation.positions,
+            dependency_positions=_equation_dependency_positions(equation, position),
         )
     if solved_token_id in banned_token_ids:
         return XorPeelConflict(
@@ -812,6 +942,8 @@ def _legality_conflict(
             position=position,
             solved_token_id=solved_token_id,
             reason="solved_token_is_banned",
+            equation_positions=equation.positions,
+            dependency_positions=_equation_dependency_positions(equation, position),
         )
     return None
 
