@@ -545,6 +545,30 @@ Use the frozen 10-sample LLaDA-tokenized artifact, loaded hash profiles,
 `loss_rate=0.5` and burst `burst_start_wire_id=0`, `burst_length=16`. Use
 `channel_lost_position_recovery_rate` as the headline recovery metric.
 
+The first focused sparse-fountain validation completed on the GPU server:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-sparse-fountain-20260512_011610
+```
+
+It used the frozen 10-sample LLaDA-tokenized artifact, loaded hash4 profile,
+`steps=8`, `commit_once + always`, token and packet interleaving, sparse seed
+`7`, coverage enabled, and bounded component size `8`.
+
+| strategy | channel | channel recovery | edit distance | normalized edit | exact match | known preserved | masks left | total overhead | latency sec | forwards | initial peel | initial linear | iterative peel | iterative linear | sparse mean degree | parity violations |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Sparse-only xor4 | IID | 0.0753 | 53.7 | 0.4195 | 0.0000 | 1.0000 | 53.7 | 0.2344 | 0.0000 | 0.0 | 3.9 | 0.0 |  |  | 4.6667 |  |
+| Sparse-only xor4 | burst | 0.2500 | 24.0 | 0.1875 | 0.0000 | 1.0000 | 24.0 | 0.2344 | 0.0000 | 0.0 | 8.0 | 0.0 |  |  | 4.6667 |  |
+| Hybrid hash4+sparse-xor4 iterative | IID | 0.8343 | 10.6 | 0.0828 | 0.1000 | 1.0000 | 0.0 | 0.4623 | 10.3379 | 8.0 | 3.9 | 0.0 | 7.6 | 0.0 | 4.6667 | 0.8 |
+| Hybrid hash4+sparse-xor4 iterative | burst | 0.9781 | 0.7 | 0.0055 | 0.6000 | 1.0000 | 0.0 | 0.4623 | 1.2336 | 7.7 | 8.0 | 0.0 | 6.4 | 0.0 | 4.6667 | 0.2 |
+
+Compared with the earlier 10-sample validations, sparse hybrid improved over
+hash8 (`0.7901` IID, `0.8563` burst) and stripe XOR iterative (`0.7561` IID,
+`0.8893` burst) at similar total overhead. In this first run the bounded GF(2)
+linear solver recovered `0.0` mean tokens; the improvement came from sparse
+parity structure, initial/iterative peeling, and parity candidate filtering.
+This is strong validation evidence, but still not a final research claim.
+
 The channel-loss reanalysis artifacts are written under:
 
 ```text

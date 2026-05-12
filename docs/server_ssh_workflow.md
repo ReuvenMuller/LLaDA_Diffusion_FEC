@@ -32,6 +32,16 @@ Verification command:
 ssh -T rmuller7@10.96.50.180 "echo connected"
 ```
 
+If the Windows OpenSSH client connects but hangs during key exchange, use the
+explicit key-exchange fallback that worked during sparse-fountain validation:
+
+```bash
+ssh -o KexAlgorithms=diffie-hellman-group14-sha256 -T rmuller7@10.96.50.180 "echo connected"
+```
+
+Use the same `-o KexAlgorithms=diffie-hellman-group14-sha256` option for `git
+pull`, `pytest`, and short status commands when the default SSH path times out.
+
 ### 2. Prefer one-shot commands over interactive shells
 
 Use:
