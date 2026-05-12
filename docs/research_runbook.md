@@ -614,6 +614,38 @@ linear solver recovered `0.0` mean tokens; the improvement came from sparse
 parity structure, initial/iterative peeling, and parity candidate filtering.
 This is strong validation evidence, but still not a final research claim.
 
+The first focused rollback validation completed on the GPU server:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-rollback-20260512_030702
+```
+
+It used the same frozen 10-sample artifact, loaded hash profiles, sparse seed
+`7`, `hash4 + xor4`, `steps=8`, `commit_once + always`, token and packet
+interleaving, IID `loss_rate=0.5`, and burst `burst_start_wire_id=0`,
+`burst_length=16`. The detached server run required:
+
+```bash
+export HF_HOME=/mnt/bst/a100/yxie2/rmuller7/.hf-cache-llada-diffusion-fec
+```
+
+Without that cache setting, `--llada-local-files-only` cannot find the cached
+tokenizer/config in a fresh `tmux` session.
+
+| strategy | channel | channel recovery | edit distance | normalized edit | exact match | known preserved | masks left | total overhead | latency sec | forwards | decoder steps | iterative peel | rollback events | rollback positions | rollback bans | parity violations |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Hash8 | IID | 0.7901 | 15.4 | 0.1203 | 0.0000 | 1.0000 | 0.0 | 0.4559 | 2.8268 | 8.0 | 8.0 |  |  |  |  |  |
+| Sparse iterative peel | IID | 0.8343 | 10.6 | 0.0828 | 0.1000 | 1.0000 | 0.0 | 0.4623 | 10.2744 | 8.0 | 8.0 | 7.6 | 0.0 | 0.0 | 0.0 | 0.8 |
+| Sparse iterative rollback | IID | 0.8397 | 10.2 | 0.0797 | 0.1000 | 1.0000 | 0.1 | 0.4623 | 10.9446 | 9.2 | 9.2 | 7.9 | 3.4 | 3.5 | 0.1 | 0.4 |
+| Hash8 | burst | 0.8563 | 9.2 | 0.0719 | 0.0000 | 1.0000 | 0.0 | 0.4559 | 2.7289 | 8.0 | 8.0 |  |  |  |  |  |
+| Sparse iterative peel | burst | 0.9781 | 0.7 | 0.0055 | 0.6000 | 1.0000 | 0.0 | 0.4623 | 1.1851 | 7.7 | 7.7 | 6.4 | 0.0 | 0.0 | 0.0 | 0.2 |
+| Sparse iterative rollback | burst | 0.9844 | 0.5 | 0.0039 | 0.6000 | 1.0000 | 0.1 | 0.4623 | 1.2284 | 8.1 | 8.1 | 6.5 | 0.9 | 0.5 | 0.2 | 0.1 |
+
+Rollback modestly improved sparse iterative peel in both IID and burst, and it
+cut mean parity violations roughly in half. The cost was a small increase in
+forward calls/latency and a mean `0.1` remaining mask tokens after the rollback
+budget. This is promising decoder-design validation, not a final result.
+
 The channel-loss reanalysis artifacts are written under:
 
 ```text
