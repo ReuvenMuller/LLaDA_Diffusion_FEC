@@ -4,13 +4,24 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from diffusion_fec.baselines.xor_parity import (
     XOR_PARITY_SCHEME,
     XorParityConfig,
     encode_xor_parity,
     reconstruct_xor_parity,
+)
+from diffusion_fec.baselines.sparse_fountain_xor import (
+    SPARSE_FOUNTAIN_XOR_SCHEME,
+    SparseFountainXorConfig,
+    encode_sparse_fountain_xor,
+    parse_degree_distribution,
+)
+from diffusion_fec.baselines.xor_equations import (
+    equations_from_sparse_fountain_packets,
+    known_tokens_from_data_packets,
+    solve_xor_equations,
 )
 from diffusion_fec.baselines.lt_fountain import (
     LT_FOUNTAIN_SCHEME,
@@ -47,7 +58,14 @@ from diffusion_fec.metrics.token_metrics import (
     compute_token_metrics,
     TokenMetrics,
 )
-from diffusion_fec.types import Packet, ReconstructionPlan, TokenSample
+from diffusion_fec.types import (
+    Packet,
+    ReconstructionEntry,
+    ReconstructionPlan,
+    STATE_KNOWN,
+    STATE_UNGUIDED,
+    TokenSample,
+)
 
 
 XOR_PARITY_MODEL_LABEL = "ClassicalXORParity"
@@ -56,6 +74,8 @@ LT_FOUNTAIN_MODEL_LABEL = "ClassicalLTFountain"
 LT_FOUNTAIN_BASELINE_FAMILY = "lt_fountain"
 STREAMING_WINDOW_MODEL_LABEL = "ClassicalStreamingWindow"
 STREAMING_WINDOW_BASELINE_FAMILY = "streaming_window"
+SPARSE_FOUNTAIN_XOR_MODEL_LABEL = "ClassicalSparseFountainXOR"
+SPARSE_FOUNTAIN_XOR_BASELINE_FAMILY = "sparse_fountain_xor"
 
 
 def run_xor_parity_micro_eval(
@@ -205,6 +225,215 @@ def run_xor_parity_micro_eval(
                 "sample": sample.to_dict(),
                 "encoded": encoded.to_dict(),
                 "loss_result": loss_result.to_dict(),
+                "reconstruction_plan": plan.to_dict(),
+                "reconstructed_tokens": list(reconstructed_tokens),
+                "channel_lost_positions": list(channel_lost_positions),
+                "channel_lost_metrics": channel_metrics.to_dict(),
+                "metrics": {**metrics.to_dict(), **channel_metrics.to_dict()},
+            }
+        )
+
+    artifact_data = write_run_artifacts(
+        output_dir=output_dir,
+        manifest=manifest,
+        result_rows=result_rows,
+        events=events,
+        run_timer=run_timer,
+    )
+    return {
+        "run_id": run_id,
+        "manifest": artifact_data["manifest"],
+        "result_rows": artifact_data["result_rows"],
+        "events": events,
+    }
+
+
+def run_sparse_fountain_xor_micro_eval(
+    *,
+    output_dir: str | Path,
+    sample_lengths: Sequence[int] = DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
+    samples: Sequence[TokenSample] | None = None,
+    dataset_info: dict[str, Any] | None = None,
+    loss_rate: float = 0.5,
+    seed: int = 0,
+    tokens_per_packet: int = DEFAULT_MICRO_EVAL_TOKENS_PER_PACKET,
+    hash_bits: int = DEFAULT_MICRO_EVAL_HASH_BITS,
+    xor_overhead_bits_per_token: float = 4.0,
+    vocab_size: int = DEFAULT_MICRO_EVAL_VOCAB_SIZE,
+    source_layout: SourceLayoutConfig | None = None,
+    wire_interleaving: WireInterleavingConfig | None = None,
+    channel_config: PacketLossChannelConfig | None = None,
+    sparse_xor_seed: int = 7,
+    sparse_xor_coverage: bool = True,
+    sparse_xor_degree_distribution: str | Sequence[tuple[int, float]] = "2:0.5,3:0.35,4:0.15",
+    sparse_xor_max_coverage_degree: int = 8,
+    sparse_xor_max_component_unknowns: int = 8,
+    sparse_xor_enable_linear_solve: bool = True,
+) -> dict[str, Any]:
+    """Run deterministic sparse fountain XOR baseline cases and write artifacts."""
+
+    run_timer = start_run_timer()
+    source_layout = source_layout or SourceLayoutConfig()
+    wire_interleaving = wire_interleaving or WireInterleavingConfig()
+    channel_config = channel_config or PacketLossChannelConfig(
+        mode=CHANNEL_RANDOM_IID,
+        loss_rate=loss_rate,
+        seed=seed,
+    )
+    samples = None if samples is None else tuple(samples)
+    sample_lengths = _resolve_sample_lengths(
+        sample_lengths=sample_lengths,
+        samples=samples,
+        vocab_size=vocab_size,
+    )
+    _validate_config(
+        sample_lengths=sample_lengths,
+        loss_rate=loss_rate,
+        tokens_per_packet=tokens_per_packet,
+        hash_bits=hash_bits,
+        vocab_size=vocab_size,
+    )
+    sparse_config = SparseFountainXorConfig(
+        xor_overhead_bits_per_token=xor_overhead_bits_per_token,
+        vocab_size=vocab_size,
+        random_seed=sparse_xor_seed,
+        coverage_enabled=sparse_xor_coverage,
+        degree_distribution=parse_degree_distribution(sparse_xor_degree_distribution),
+        max_coverage_degree=sparse_xor_max_coverage_degree,
+    )
+    run_id = _sparse_run_id(
+        sample_lengths=sample_lengths,
+        loss_rate=loss_rate,
+        seed=seed,
+        tokens_per_packet=tokens_per_packet,
+        hash_bits=hash_bits,
+        source_layout=source_layout,
+        wire_interleaving=wire_interleaving,
+        channel_config=channel_config,
+        sparse_config=sparse_config,
+        sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
+        sparse_xor_enable_linear_solve=sparse_xor_enable_linear_solve,
+    )
+    manifest = _sparse_manifest(
+        run_id=run_id,
+        sample_lengths=sample_lengths,
+        loss_rate=loss_rate,
+        seed=seed,
+        tokens_per_packet=tokens_per_packet,
+        hash_bits=hash_bits,
+        vocab_size=vocab_size,
+        source_layout=source_layout,
+        wire_interleaving=wire_interleaving,
+        channel_config=channel_config,
+        sparse_config=sparse_config,
+        sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
+        sparse_xor_enable_linear_solve=sparse_xor_enable_linear_solve,
+        dataset_info=dataset_info,
+    )
+
+    result_rows: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    for case_index, sample_length in enumerate(sample_lengths):
+        sample = _sample_for_case(
+            samples=samples,
+            case_index=case_index,
+            sample_length=sample_length,
+            vocab_size=vocab_size,
+        )
+        encoded = encode_sparse_fountain_xor(
+            sample,
+            tokens_per_packet=tokens_per_packet,
+            config=sparse_config,
+            source_layout=source_layout,
+            wire_interleaving=wire_interleaving,
+        )
+        case_seed = seed + case_index
+        case_channel_config = replace(channel_config, seed=case_seed)
+        loss_result = apply_packet_loss_channel(
+            encoded.packets,
+            config=case_channel_config,
+        )
+        known_tokens = known_tokens_from_data_packets(
+            loss_result.received,
+            total_tokens=len(sample.token_ids),
+        )
+        equations = equations_from_sparse_fountain_packets(
+            loss_result.received,
+            total_tokens=len(sample.token_ids),
+            config=sparse_config,
+        )
+        solve_result = solve_xor_equations(
+            equations=equations,
+            known_tokens=known_tokens,
+            vocab_size=vocab_size,
+            enable_linear_solve=sparse_xor_enable_linear_solve,
+            max_component_unknowns=sparse_xor_max_component_unknowns,
+        )
+        plan = _plan_from_known_tokens(
+            total_tokens=len(sample.token_ids),
+            known_tokens=solve_result.known_tokens,
+        )
+        reconstructed_tokens = _tokens_from_plan(plan)
+        metrics = compute_token_metrics(
+            original_tokens=sample.token_ids,
+            reconstructed_tokens=reconstructed_tokens,
+            reconstruction_plan=plan,
+            mask_token_id=DEFAULT_MASK_TOKEN_ID,
+        )
+        channel_lost_positions, channel_metrics = _channel_lost_metrics(
+            sample=sample,
+            reconstructed_tokens=reconstructed_tokens,
+            dropped_packets=loss_result.dropped,
+        )
+        case_id = f"case{case_index:04d}"
+        result_rows.append(
+            {
+                **_result_row(
+                    run_id=run_id,
+                    case_id=case_id,
+                    sample_id=sample.sample_id,
+                    case_seed=case_seed,
+                    loss_rate=loss_rate,
+                    tokens_per_packet=tokens_per_packet,
+                    hash_bits=hash_bits,
+                    source_token_count=len(sample.token_ids),
+                    plan=plan,
+                    metrics=metrics,
+                    channel_metrics=channel_metrics,
+                    received_packet_count=len(loss_result.received),
+                    dropped_packet_count=len(loss_result.dropped),
+                    source_layout=source_layout,
+                    wire_interleaving=wire_interleaving,
+                    channel_config=case_channel_config,
+                    encoded=encoded,
+                    model_label=SPARSE_FOUNTAIN_XOR_MODEL_LABEL,
+                    strategy=_sparse_strategy(hash_bits),
+                    baseline_family=SPARSE_FOUNTAIN_XOR_BASELINE_FAMILY,
+                    protection_mode=SPARSE_FOUNTAIN_XOR_SCHEME,
+                ),
+                "xor_code": "sparse_fountain",
+                "xor_overhead_bits_per_token": xor_overhead_bits_per_token,
+                "xor_target_overhead_ratio": encoded.overhead.target_overhead_ratio,
+                **_sparse_result_fields(encoded.diagnostics.to_dict()),
+                **_linear_solver_result_fields(solve_result.linear_solver_diagnostics),
+                "parity_equation_count": len(encoded.equation_specs),
+                "parity_received_equation_count": len(equations),
+                "parity_peel_iterations": solve_result.peel_iteration_count,
+                "parity_peel_recovered_count": solve_result.recovered_count,
+                "parity_hash_conflict_count": solve_result.conflict_count,
+            }
+        )
+        events.append(
+            {
+                "event_type": "sparse_fountain_xor_micro_eval_case",
+                "run_id": run_id,
+                "case_id": case_id,
+                "model_label": SPARSE_FOUNTAIN_XOR_MODEL_LABEL,
+                "strategy": _sparse_strategy(hash_bits),
+                "sample": sample.to_dict(),
+                "encoded": encoded.to_dict(),
+                "loss_result": loss_result.to_dict(),
+                "solve_result": solve_result.to_dict(),
                 "reconstruction_plan": plan.to_dict(),
                 "reconstructed_tokens": list(reconstructed_tokens),
                 "channel_lost_positions": list(channel_lost_positions),
@@ -640,6 +869,68 @@ def _tokens_from_plan(plan: ReconstructionPlan) -> tuple[int, ...]:
     )
 
 
+def _plan_from_known_tokens(
+    *,
+    total_tokens: int,
+    known_tokens: Mapping[int, int],
+) -> ReconstructionPlan:
+    entries: list[ReconstructionEntry] = []
+    for position in range(total_tokens):
+        token_id = known_tokens.get(position)
+        if token_id is None:
+            entries.append(ReconstructionEntry(position=position, state=STATE_UNGUIDED))
+        else:
+            entries.append(
+                ReconstructionEntry(
+                    position=position,
+                    state=STATE_KNOWN,
+                    token_id=int(token_id),
+                    fixed=True,
+                )
+            )
+    return ReconstructionPlan(entries=tuple(entries), total_tokens=total_tokens)
+
+
+def _empty_linear_solver_diagnostics() -> dict[str, Any]:
+    return {
+        "linear_solver_enabled": False,
+        "linear_solver_components_seen": 0,
+        "linear_solver_components_solved": 0,
+        "linear_solver_tokens_recovered": 0,
+        "linear_solver_rank_deficient_count": 0,
+        "linear_solver_validation_conflict_count": 0,
+        "linear_solver_too_large_count": 0,
+    }
+
+
+def _linear_solver_result_fields(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    data = {**_empty_linear_solver_diagnostics(), **dict(diagnostics or {})}
+    return {
+        "linear_solver_enabled": data["linear_solver_enabled"],
+        "linear_solver_components_seen": data["linear_solver_components_seen"],
+        "linear_solver_components_solved": data["linear_solver_components_solved"],
+        "linear_solver_tokens_recovered": data["linear_solver_tokens_recovered"],
+        "linear_solver_rank_deficient_count": data["linear_solver_rank_deficient_count"],
+        "linear_solver_validation_conflict_count": data["linear_solver_validation_conflict_count"],
+        "linear_solver_too_large_count": data["linear_solver_too_large_count"],
+    }
+
+
+def _sparse_result_fields(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "sparse_equation_count": diagnostics.get("equation_count", 0),
+        "sparse_budget_exhausted": diagnostics.get("budget_exhausted", False),
+        "sparse_coverage_enabled": diagnostics.get("coverage_enabled", False),
+        "sparse_coverage_possible": diagnostics.get("coverage_possible", False),
+        "sparse_coverage_pass_degree": diagnostics.get("coverage_pass_degree", 0),
+        "sparse_coverage_zero_count": diagnostics.get("coverage_zero_count", 0),
+        "sparse_coverage_min": diagnostics.get("coverage_min", 0),
+        "sparse_coverage_mean": diagnostics.get("coverage_mean", 0.0),
+        "sparse_actual_mean_degree": diagnostics.get("actual_mean_degree", 0.0),
+        "sparse_degree_histogram": str(dict(diagnostics.get("degree_histogram", {}))),
+    }
+
+
 def _channel_lost_metrics(
     *,
     sample: TokenSample,
@@ -682,6 +973,93 @@ def _run_id(
 
 def _strategy(hash_bits: int) -> str:
     return f"Classical_XORParity_MatchedHash{hash_bits}"
+
+
+def _sparse_strategy(hash_bits: int) -> str:
+    return f"Classical_SparseFountainXOR_MatchedHash{hash_bits}"
+
+
+def _sparse_run_id(
+    *,
+    sample_lengths: Sequence[int],
+    loss_rate: float,
+    seed: int,
+    tokens_per_packet: int,
+    hash_bits: int,
+    source_layout: SourceLayoutConfig,
+    wire_interleaving: WireInterleavingConfig,
+    channel_config: PacketLossChannelConfig,
+    sparse_config: SparseFountainXorConfig,
+    sparse_xor_max_component_unknowns: int,
+    sparse_xor_enable_linear_solve: bool,
+) -> str:
+    lengths = "-".join(str(length) for length in sample_lengths)
+    source_chunk = source_layout.chunk_size if source_layout.chunk_size is not None else "default"
+    return (
+        f"sparse-fountain-xor-micro-eval|matched-hash{hash_bits}|loss{loss_rate:g}|"
+        f"lengths{lengths}|tpp{tokens_per_packet}|seed{seed}|"
+        f"sparse-seed{sparse_config.random_seed}|linear{int(sparse_xor_enable_linear_solve)}|"
+        f"maxcomp{sparse_xor_max_component_unknowns}|"
+        f"source-{source_layout.mode}-chunk{source_chunk}|"
+        f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}|"
+        f"channel-{channel_config.mode}"
+    )
+
+
+def _sparse_manifest(
+    *,
+    run_id: str,
+    sample_lengths: Sequence[int],
+    loss_rate: float,
+    seed: int,
+    tokens_per_packet: int,
+    hash_bits: int,
+    vocab_size: int,
+    source_layout: SourceLayoutConfig,
+    wire_interleaving: WireInterleavingConfig,
+    channel_config: PacketLossChannelConfig,
+    sparse_config: SparseFountainXorConfig,
+    sparse_xor_max_component_unknowns: int,
+    sparse_xor_enable_linear_solve: bool,
+    dataset_info: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "runner": "sparse_fountain_xor_synthetic_micro_eval",
+        "model_label": SPARSE_FOUNTAIN_XOR_MODEL_LABEL,
+        "model_kind": "classical_sparse_fountain_xor",
+        "baseline_family": SPARSE_FOUNTAIN_XOR_BASELINE_FAMILY,
+        "not_a_research_claim": True,
+        "not_a_research_claim_warning": MICRO_EVAL_WARNING,
+        "micro_eval": True,
+        "strategy": _sparse_strategy(hash_bits),
+        "config": {
+            "sample_lengths": list(sample_lengths),
+            "loss_rate": loss_rate,
+            "seed": seed,
+            "tokens_per_packet": tokens_per_packet,
+            "hash_bits": hash_bits,
+            "vocab_size": vocab_size,
+            "protection_mode": SPARSE_FOUNTAIN_XOR_SCHEME,
+            "xor_code": "sparse_fountain",
+            "oracle_hash_metadata": False,
+            "source_layout": source_layout.to_dict(),
+            "wire_interleaving": wire_interleaving.to_dict(),
+            "channel": channel_config.to_dict(),
+            "sparse_fountain_xor": sparse_config.to_dict(),
+            "sparse_xor_max_component_unknowns": sparse_xor_max_component_unknowns,
+            "sparse_xor_enable_linear_solve": sparse_xor_enable_linear_solve,
+            "sample_generation": _sample_generation_info(dataset_info),
+            "equation_structure_metadata": (
+                "derived_from_shared_seed_and_config; positions in events are audit metadata"
+            ),
+        },
+        "artifacts": {
+            "manifest": "run_manifest.json",
+            "results": "results.csv",
+            "events": "events.jsonl",
+        },
+    }
 
 
 def _manifest(

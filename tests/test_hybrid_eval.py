@@ -22,6 +22,8 @@ from diffusion_fec.experiments.hybrid_eval import (
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
     IterativeXorPeelHook,
+    XOR_CODE_SPARSE_FOUNTAIN,
+    XOR_CODE_STRIPE,
     run_hybrid_recovery_case,
     run_hybrid_xor_hash_micro_eval,
 )
@@ -445,3 +447,57 @@ def test_hybrid_cli_entrypoint_writes_artifacts(tmp_path) -> None:
     assert exit_code == 0
     assert read_json(output_dir / "run_manifest.json")["config"]["hybrid_mode"] == "pre_peel_only"
     assert read_csv(output_dir / "results.csv")[0]["protection_mode"] == "lookback_1+xor_parity"
+
+
+def test_default_hybrid_xor_code_is_stripe(tmp_path) -> None:
+    output_dir = tmp_path / "stripe_default"
+
+    run_hybrid_xor_hash_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=2,
+        vocab_size=64,
+        steps=2,
+        hybrid_mode=HYBRID_MODE_ITERATIVE_PEEL,
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    row = read_csv(output_dir / "results.csv")[0]
+    assert manifest["config"]["xor_code"] == XOR_CODE_STRIPE
+    assert row["xor_code"] == XOR_CODE_STRIPE
+    assert row["sparse_equation_count"] == "0"
+
+
+def test_sparse_hybrid_artifacts_include_sparse_and_linear_diagnostics(tmp_path) -> None:
+    output_dir = tmp_path / "sparse_hybrid"
+
+    run_hybrid_xor_hash_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=1,
+        vocab_size=64,
+        steps=2,
+        hybrid_mode=HYBRID_MODE_ITERATIVE_PEEL,
+        xor_code=XOR_CODE_SPARSE_FOUNTAIN,
+        sparse_xor_seed=2,
+        sparse_xor_enable_linear_solve=True,
+        source_layout=SourceLayoutConfig(mode=SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS, chunk_size=1),
+        wire_interleaving=WireInterleavingConfig(mode=WIRE_INTERLEAVING_MATRIX, span=4),
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_length=2,
+        ),
+    )
+
+    manifest = read_json(output_dir / "run_manifest.json")
+    row = read_csv(output_dir / "results.csv")[0]
+    event = json.loads((output_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert manifest["config"]["xor_code"] == XOR_CODE_SPARSE_FOUNTAIN
+    assert manifest["config"]["sparse_fountain_xor"]["random_seed"] == 2
+    assert int(row["sparse_equation_count"]) > 0
+    assert row["linear_solver_enabled"] == "True"
+    assert row["iterative_linear_solver_enabled"] == "True"
+    assert event["case"]["xor_code"] == XOR_CODE_SPARSE_FOUNTAIN
+    assert event["case"]["sparse_diagnostics"]["coverage_pass_degree"] >= 1

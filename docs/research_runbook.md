@@ -472,6 +472,79 @@ small IID improvement (`0.7556` to `0.7561` recovery, edit distance `16.9` to
 as decoder-design validation only; the next step is still controlled sweeps over
 XOR layouts and more samples before making research claims.
 
+### Sparse Fountain XOR Validation
+
+The next XOR option is `xor_code=sparse_fountain`, documented as
+**Raptor/LT-inspired Sparse Fountain XOR with bounded GF(2) component solving**.
+It is not RaptorQ. The existing stripe path remains the default:
+
+```text
+xor_code=stripe
+```
+
+Sparse fountain XOR generates deterministic overlapping token-level XOR
+equations from shared config and seed. The transmitted repair budget is strict:
+
+```text
+repair_token_budget = floor(total_tokens * xor_overhead_bits_per_token / token_bit_width)
+equation_count <= repair_token_budget
+```
+
+Each sparse repair equation transmits one token-equivalent XOR value. Equation
+structure is reconstructed from manifest config and seed; position lists in
+events/packet metadata are audit metadata, not additional modeled transmitted
+overhead. Sparse artifacts report `repair_token_budget`, `sparse_equation_count`,
+`actual_repair_token_overhead_ratio`, `sparse_budget_exhausted`,
+`sparse_coverage_pass_degree`, `sparse_coverage_zero_count`,
+`sparse_coverage_mean`, `sparse_actual_mean_degree`, and
+`sparse_degree_histogram`.
+
+The sparse solver first runs normal XOR peeling. If peeling stalls, it builds
+small connected components over remaining unknown token positions and received
+equations. Components up to `sparse_xor_max_component_unknowns` are solved as a
+true GF(2) system: the coefficient matrix is binary over token positions and the
+token-ID RHS is carried bit-plane-wise through XOR row operations. Only unique
+full-rank solutions are promoted. Rank-deficient or too-large components are
+skipped, and solved tokens must pass vocab, special-token, and hash validation
+before being fixed.
+
+Local fake sparse smoke:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\sparse_fountain_fake_smoke `
+  --hybrid-xor-hash-micro-eval `
+  --xor-code sparse_fountain `
+  --hybrid-mode iterative_peel `
+  --sample-lengths 8 `
+  --tokens-per-packet 1 `
+  --vocab-size 64 `
+  --steps 2 `
+  --hash-bits 4 `
+  --xor-overhead-bits-per-token 4 `
+  --sparse-xor-seed 7 `
+  --sparse-xor-enable-linear-solve on `
+  --channel burst `
+  --burst-start-wire-id 0 `
+  --burst-length 2
+```
+
+Focused real validation should compare only:
+
+```text
+hash8
+hash4 + stripe XOR iterative
+hash4 + sparse_fountain XOR iterative
+sparse_fountain XOR only, if cheap
+```
+
+Use the frozen 10-sample LLaDA-tokenized artifact, loaded hash profiles,
+`steps=8`, `commit_once + always`, `tokens_per_packet=4`,
+`source_layout=round_robin_chunks`, `source_chunk_size=1`,
+`wire_interleaving=matrix`, `wire_interleaving_span=4`, and both IID
+`loss_rate=0.5` and burst `burst_start_wire_id=0`, `burst_length=16`. Use
+`channel_lost_position_recovery_rate` as the headline recovery metric.
+
 The channel-loss reanalysis artifacts are written under:
 
 ```text

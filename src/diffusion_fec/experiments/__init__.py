@@ -2,6 +2,7 @@
 
 from diffusion_fec.experiments.classical_micro_eval import (
     run_lt_fountain_micro_eval,
+    run_sparse_fountain_xor_micro_eval,
     run_streaming_window_micro_eval,
     run_xor_parity_micro_eval,
 )
@@ -18,6 +19,8 @@ from diffusion_fec.experiments.hybrid_eval import (
     HYBRID_MODE_ITERATIVE_PEEL,
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
+    XOR_CODE_SPARSE_FOUNTAIN,
+    XOR_CODE_STRIPE,
     run_hybrid_xor_hash_micro_eval,
     run_real_llada_hybrid_xor_hash_micro_eval,
 )
@@ -35,6 +38,8 @@ __all__ = [
     "HYBRID_MODE_ITERATIVE_PEEL",
     "HYBRID_MODE_PARITY_FILTER",
     "HYBRID_MODE_PRE_PEEL_ONLY",
+    "XOR_CODE_SPARSE_FOUNTAIN",
+    "XOR_CODE_STRIPE",
     "RealLLaDAMicroEvalUnavailable",
     "SmokeRecoveryCase",
     "SweepRunSpec",
@@ -44,6 +49,7 @@ __all__ = [
     "run_real_llada_hybrid_xor_hash_micro_eval",
     "run_hybrid_xor_hash_micro_eval",
     "run_lt_fountain_micro_eval",
+    "run_sparse_fountain_xor_micro_eval",
     "run_synthetic_micro_eval",
     "run_synthetic_sweep",
     "run_streaming_window_micro_eval",

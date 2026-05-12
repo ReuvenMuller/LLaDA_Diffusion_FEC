@@ -18,8 +18,17 @@ from diffusion_fec.baselines.xor_equations import (
     XorPeelResult,
     audit_xor_equations,
     equations_from_parity_packets,
+    equations_from_sparse_fountain_packets,
     known_tokens_from_data_packets,
     peel_xor_equations,
+    solve_xor_equations,
+)
+from diffusion_fec.baselines.sparse_fountain_xor import (
+    SPARSE_FOUNTAIN_XOR_SCHEME,
+    SparseFountainXorConfig,
+    SparseFountainXorEncoded,
+    encode_sparse_fountain_xor,
+    parse_degree_distribution,
 )
 from diffusion_fec.baselines.xor_parity import (
     XOR_PARITY_SCHEME,
@@ -114,6 +123,10 @@ FAKE_HYBRID_MODEL_LABEL = "FakeDeterministicHybridXorHashModel"
 REAL_HYBRID_MODEL_KIND = "real_llada_huggingface_hybrid_xor_hash"
 FAKE_HYBRID_MODEL_KIND = "fake_deterministic_hybrid_xor_hash_model"
 DEFAULT_XOR_OVERHEAD_BITS_PER_TOKEN = 4.0
+XOR_CODE_STRIPE = "stripe"
+XOR_CODE_SPARSE_FOUNTAIN = "sparse_fountain"
+VALID_XOR_CODES = frozenset({XOR_CODE_STRIPE, XOR_CODE_SPARSE_FOUNTAIN})
+DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS = 8
 
 
 @dataclass(frozen=True)
@@ -121,7 +134,7 @@ class HybridRecoveryCase:
     """Artifacts for one hybrid recovery case."""
 
     sample: TokenSample
-    encoded: XorParityEncoded
+    encoded: XorParityEncoded | SparseFountainXorEncoded
     transmitted_packets: tuple[Packet, ...]
     loss_result: RandomLossResult
     hash_metadata: dict[int, int]
@@ -130,6 +143,8 @@ class HybridRecoveryCase:
     parity_filter_diagnostics: dict[str, Any]
     channel_config: PacketLossChannelConfig
     hybrid_mode: str
+    xor_code: str
+    sparse_diagnostics: dict[str, Any]
     reconstruction_plan: ReconstructionPlan
     decoding_result: DecodingResult
     mask_token_id: int
@@ -167,6 +182,8 @@ class HybridRecoveryCase:
             "parity_filter_diagnostics": dict(self.parity_filter_diagnostics),
             "channel_config": self.channel_config.to_dict(),
             "hybrid_mode": self.hybrid_mode,
+            "xor_code": self.xor_code,
+            "sparse_diagnostics": dict(self.sparse_diagnostics),
             "reconstruction_plan": self.reconstruction_plan.to_dict(),
             "decoding_result": self.decoding_result.to_dict(),
             "channel_lost_positions": list(self.channel_lost_positions),
@@ -187,6 +204,8 @@ class IterativeXorPeelHook:
         mask_token_id: int,
         vocab_size: int,
         banned_token_ids: Sequence[int],
+        enable_linear_solve: bool = False,
+        max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
     ) -> None:
         self.equations = tuple(equations)
         self.hash_metadata = {int(position): int(value) for position, value in hash_metadata.items()}
@@ -194,10 +213,15 @@ class IterativeXorPeelHook:
         self.mask_token_id = int(mask_token_id)
         self.vocab_size = int(vocab_size)
         self.banned_token_ids = frozenset(int(token_id) for token_id in banned_token_ids)
+        self.enable_linear_solve = bool(enable_linear_solve)
+        self.max_component_unknowns = int(max_component_unknowns)
         self.call_count = 0
         self.per_step_recovered_count: list[int] = []
         self.recovered_tokens: dict[int, int] = {}
         self.conflicts = {}
+        self.linear_solver_diagnostics = _empty_linear_solver_diagnostics(
+            enabled=self.enable_linear_solve
+        )
 
     def __call__(
         self,
@@ -217,15 +241,18 @@ class IterativeXorPeelHook:
             prompt_length=prompt_length,
             mask_token_id=self.mask_token_id,
         )
-        peel = peel_xor_equations(
+        peel = solve_xor_equations(
             equations=self.equations,
             known_tokens=known_tokens,
             hash_metadata=self.hash_metadata,
             token_hash_map=self.token_hash_map,
             vocab_size=self.vocab_size,
             banned_token_ids=self.banned_token_ids,
+            enable_linear_solve=self.enable_linear_solve,
+            max_component_unknowns=self.max_component_unknowns,
         )
         self._record_conflicts(peel)
+        self._accumulate_linear_diagnostics(peel.linear_solver_diagnostics)
         newly_fixed = {
             int(position): int(token_id)
             for position, token_id in peel.recovered_tokens.items()
@@ -245,6 +272,25 @@ class IterativeXorPeelHook:
             "iterative_peel_recovered_positions": tuple(sorted(self.recovered_tokens)),
             "iterative_peel_recovered_count_by_step": tuple(self.per_step_recovered_count),
             "iterative_peel_conflict_count": len(conflicts),
+            "iterative_linear_solver_enabled": self.enable_linear_solve,
+            "iterative_linear_solver_components_seen": self.linear_solver_diagnostics[
+                "linear_solver_components_seen"
+            ],
+            "iterative_linear_solver_components_solved": self.linear_solver_diagnostics[
+                "linear_solver_components_solved"
+            ],
+            "iterative_linear_solver_tokens_recovered": self.linear_solver_diagnostics[
+                "linear_solver_tokens_recovered"
+            ],
+            "iterative_linear_solver_rank_deficient_count": self.linear_solver_diagnostics[
+                "linear_solver_rank_deficient_count"
+            ],
+            "iterative_linear_solver_validation_conflict_count": self.linear_solver_diagnostics[
+                "linear_solver_validation_conflict_count"
+            ],
+            "iterative_linear_solver_too_large_count": self.linear_solver_diagnostics[
+                "linear_solver_too_large_count"
+            ],
             "iterative_peel_hash_conflict_count": sum(
                 conflict.reason in {
                     "parity_hash_conflict",
@@ -277,6 +323,13 @@ class IterativeXorPeelHook:
             )
             self.conflicts[key] = conflict
 
+    def _accumulate_linear_diagnostics(self, diagnostics: Mapping[str, Any]) -> None:
+        for key in self.linear_solver_diagnostics:
+            if key == "linear_solver_enabled":
+                self.linear_solver_diagnostics[key] = self.enable_linear_solve
+            else:
+                self.linear_solver_diagnostics[key] += int(diagnostics.get(key, 0))
+
 
 def run_hybrid_xor_hash_micro_eval(
     *,
@@ -295,6 +348,13 @@ def run_hybrid_xor_hash_micro_eval(
     hash_constraint_schedule: str = HASH_CONSTRAINT_ALWAYS,
     hybrid_mode: str = HYBRID_MODE_PARITY_FILTER,
     parity_filter_fallback: bool = True,
+    xor_code: str = XOR_CODE_STRIPE,
+    sparse_xor_seed: int = 7,
+    sparse_xor_coverage: bool = True,
+    sparse_xor_degree_distribution: str | Sequence[tuple[int, float]] = "2:0.5,3:0.35,4:0.15",
+    sparse_xor_max_coverage_degree: int = 8,
+    sparse_xor_max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
+    sparse_xor_enable_linear_solve: bool = True,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
     channel_config: PacketLossChannelConfig | None = None,
@@ -353,6 +413,13 @@ def run_hybrid_xor_hash_micro_eval(
         hash_constraint_schedule=hash_constraint_schedule,
         hybrid_mode=hybrid_mode,
         parity_filter_fallback=parity_filter_fallback,
+        xor_code=xor_code,
+        sparse_xor_seed=sparse_xor_seed,
+        sparse_xor_coverage=sparse_xor_coverage,
+        sparse_xor_degree_distribution=sparse_xor_degree_distribution,
+        sparse_xor_max_coverage_degree=sparse_xor_max_coverage_degree,
+        sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
+        sparse_xor_enable_linear_solve=sparse_xor_enable_linear_solve,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -384,6 +451,13 @@ def run_real_llada_hybrid_xor_hash_micro_eval(
     hash_constraint_schedule: str = HASH_CONSTRAINT_ALWAYS,
     hybrid_mode: str = HYBRID_MODE_PARITY_FILTER,
     parity_filter_fallback: bool = True,
+    xor_code: str = XOR_CODE_STRIPE,
+    sparse_xor_seed: int = 7,
+    sparse_xor_coverage: bool = True,
+    sparse_xor_degree_distribution: str | Sequence[tuple[int, float]] = "2:0.5,3:0.35,4:0.15",
+    sparse_xor_max_coverage_degree: int = 8,
+    sparse_xor_max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
+    sparse_xor_enable_linear_solve: bool = True,
     local_files_only: bool = False,
     allow_cpu: bool = False,
     hash_profile_dir: str | Path | None = None,
@@ -481,6 +555,13 @@ def run_real_llada_hybrid_xor_hash_micro_eval(
         hash_constraint_schedule=hash_constraint_schedule,
         hybrid_mode=hybrid_mode,
         parity_filter_fallback=parity_filter_fallback,
+        xor_code=xor_code,
+        sparse_xor_seed=sparse_xor_seed,
+        sparse_xor_coverage=sparse_xor_coverage,
+        sparse_xor_degree_distribution=sparse_xor_degree_distribution,
+        sparse_xor_max_coverage_degree=sparse_xor_max_coverage_degree,
+        sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
+        sparse_xor_enable_linear_solve=sparse_xor_enable_linear_solve,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -514,16 +595,23 @@ def run_hybrid_recovery_case(
     channel_config: PacketLossChannelConfig,
     hybrid_mode: str,
     parity_filter_fallback: bool,
+    xor_code: str = XOR_CODE_STRIPE,
+    sparse_config: SparseFountainXorConfig | None = None,
+    sparse_linear_solve_enabled: bool = True,
+    sparse_max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
 ) -> HybridRecoveryCase:
     """Run one hybrid packet-loss and LLaDA recovery case."""
 
     _validate_hybrid_mode(hybrid_mode)
+    _validate_xor_code(xor_code)
     if hybrid_mode == HYBRID_MODE_ITERATIVE_PEEL:
         _validate_iterative_peel_decoder_config(config)
-    encoded = encode_xor_parity(
-        sample,
+    encoded = _encode_repair(
+        sample=sample,
         tokens_per_packet=tokens_per_packet,
-        config=xor_config,
+        xor_code=xor_code,
+        xor_config=xor_config,
+        sparse_config=sparse_config,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
     )
@@ -544,14 +632,24 @@ def run_hybrid_recovery_case(
         extract_received_hash_metadata(loss_result.received),
         known_tokens=known_tokens,
     )
-    received_equations = equations_from_parity_packets(loss_result.received)
-    initial_peel = peel_xor_equations(
+    received_equations = _received_equations(
+        packets=loss_result.received,
+        total_tokens=len(sample.token_ids),
+        xor_code=xor_code,
+        sparse_config=sparse_config,
+    )
+    initial_peel = solve_xor_equations(
         equations=received_equations,
         known_tokens=known_tokens,
         hash_metadata=hash_metadata,
         token_hash_map=token_hash_map,
         vocab_size=config.vocab_size,
         banned_token_ids=config.special_token_ids,
+        enable_linear_solve=_linear_solve_enabled_for_code(
+            xor_code=xor_code,
+            sparse_linear_solve_enabled=sparse_linear_solve_enabled,
+        ),
+        max_component_unknowns=sparse_max_component_unknowns,
     )
     hash_metadata = _filter_known_position_hash_metadata(
         hash_metadata,
@@ -579,6 +677,11 @@ def run_hybrid_recovery_case(
             mask_token_id=config.mask_token_id,
             vocab_size=config.vocab_size,
             banned_token_ids=config.special_token_ids,
+            enable_linear_solve=_linear_solve_enabled_for_code(
+                xor_code=xor_code,
+                sparse_linear_solve_enabled=sparse_linear_solve_enabled,
+            ),
+            max_component_unknowns=sparse_max_component_unknowns,
         )
     decoding_result = decode_masked_diffusion(
         model=model,
@@ -609,7 +712,17 @@ def run_hybrid_recovery_case(
             if post_commit_hook is not None
             else _empty_iterative_peel_diagnostics()
         ),
-        parity_equation_count=len(equations_from_parity_packets(encoded.parity_packets)),
+        linear_solver_diagnostics=initial_peel.linear_solver_diagnostics,
+        sparse_diagnostics=_sparse_diagnostics(encoded),
+        xor_code=xor_code,
+        parity_equation_count=len(
+            _received_equations(
+                packets=encoded.parity_packets,
+                total_tokens=len(sample.token_ids),
+                xor_code=xor_code,
+                sparse_config=sparse_config,
+            )
+        ),
         parity_received_equation_count=len(received_equations),
     )
     return HybridRecoveryCase(
@@ -623,10 +736,79 @@ def run_hybrid_recovery_case(
         parity_filter_diagnostics=parity_filter_diagnostics,
         channel_config=channel_config,
         hybrid_mode=hybrid_mode,
+        xor_code=xor_code,
+        sparse_diagnostics=_sparse_diagnostics(encoded),
         reconstruction_plan=plan,
         decoding_result=decoding_result,
         mask_token_id=config.mask_token_id,
     )
+
+
+def _encode_repair(
+    *,
+    sample: TokenSample,
+    tokens_per_packet: int,
+    xor_code: str,
+    xor_config: XorParityConfig,
+    sparse_config: SparseFountainXorConfig | None,
+    source_layout: SourceLayoutConfig,
+    wire_interleaving: WireInterleavingConfig,
+) -> XorParityEncoded | SparseFountainXorEncoded:
+    if xor_code == XOR_CODE_STRIPE:
+        return encode_xor_parity(
+            sample,
+            tokens_per_packet=tokens_per_packet,
+            config=xor_config,
+            source_layout=source_layout,
+            wire_interleaving=wire_interleaving,
+        )
+    if xor_code == XOR_CODE_SPARSE_FOUNTAIN:
+        if sparse_config is None:
+            raise ValueError("sparse_config is required when xor_code='sparse_fountain'")
+        return encode_sparse_fountain_xor(
+            sample,
+            tokens_per_packet=tokens_per_packet,
+            config=sparse_config,
+            source_layout=source_layout,
+            wire_interleaving=wire_interleaving,
+        )
+    _validate_xor_code(xor_code)
+    raise AssertionError("unreachable")
+
+
+def _received_equations(
+    *,
+    packets: Sequence[Packet],
+    total_tokens: int,
+    xor_code: str,
+    sparse_config: SparseFountainXorConfig | None,
+):
+    if xor_code == XOR_CODE_STRIPE:
+        return equations_from_parity_packets(packets)
+    if xor_code == XOR_CODE_SPARSE_FOUNTAIN:
+        if sparse_config is None:
+            raise ValueError("sparse_config is required when xor_code='sparse_fountain'")
+        return equations_from_sparse_fountain_packets(
+            packets,
+            total_tokens=total_tokens,
+            config=sparse_config,
+        )
+    _validate_xor_code(xor_code)
+    raise AssertionError("unreachable")
+
+
+def _linear_solve_enabled_for_code(
+    *,
+    xor_code: str,
+    sparse_linear_solve_enabled: bool,
+) -> bool:
+    return xor_code == XOR_CODE_SPARSE_FOUNTAIN and sparse_linear_solve_enabled
+
+
+def _sparse_diagnostics(encoded: XorParityEncoded | SparseFountainXorEncoded) -> dict[str, Any]:
+    if isinstance(encoded, SparseFountainXorEncoded):
+        return encoded.diagnostics.to_dict()
+    return _empty_sparse_diagnostics()
 
 
 def _run_hybrid_cases(
@@ -649,6 +831,13 @@ def _run_hybrid_cases(
     hash_constraint_schedule: str,
     hybrid_mode: str,
     parity_filter_fallback: bool,
+    xor_code: str,
+    sparse_xor_seed: int,
+    sparse_xor_coverage: bool,
+    sparse_xor_degree_distribution: str | Sequence[tuple[int, float]],
+    sparse_xor_max_coverage_degree: int,
+    sparse_xor_max_component_unknowns: int,
+    sparse_xor_enable_linear_solve: bool,
     source_layout: SourceLayoutConfig | None,
     wire_interleaving: WireInterleavingConfig | None,
     channel_config: PacketLossChannelConfig | None,
@@ -683,11 +872,21 @@ def _run_hybrid_cases(
         vocab_size=vocab_size,
         steps=steps,
         hybrid_mode=hybrid_mode,
+        xor_code=xor_code,
+        sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
     )
     xor_config = XorParityConfig(
         data_packets_per_stripe=4,
         target_overhead_ratio=xor_overhead_bits_per_token / token_bit_width_for_vocab(vocab_size),
         vocab_size=vocab_size,
+    )
+    sparse_config = SparseFountainXorConfig(
+        xor_overhead_bits_per_token=xor_overhead_bits_per_token,
+        vocab_size=vocab_size,
+        random_seed=sparse_xor_seed,
+        coverage_enabled=sparse_xor_coverage,
+        degree_distribution=parse_degree_distribution(sparse_xor_degree_distribution),
+        max_coverage_degree=sparse_xor_max_coverage_degree,
     )
     run_id = _run_id(
         runner=runner,
@@ -702,6 +901,8 @@ def _run_hybrid_cases(
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
         hybrid_mode=hybrid_mode,
+        xor_code=xor_code,
+        sparse_xor_seed=sparse_xor_seed,
         editable_update_mode=editable_update_mode,
         hash_constraint_schedule=hash_constraint_schedule,
     )
@@ -722,10 +923,14 @@ def _run_hybrid_cases(
         hash_constraint_schedule=hash_constraint_schedule,
         hybrid_mode=hybrid_mode,
         parity_filter_fallback=parity_filter_fallback,
+        xor_code=xor_code,
+        sparse_xor_max_component_unknowns=sparse_xor_max_component_unknowns,
+        sparse_xor_enable_linear_solve=sparse_xor_enable_linear_solve,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
         xor_config=xor_config,
+        sparse_config=sparse_config,
         hash_profile_info=hash_profile_info,
         dataset_info=dataset_info,
         real_llada=real_llada,
@@ -753,6 +958,10 @@ def _run_hybrid_cases(
             tokens_per_packet=tokens_per_packet,
             token_hash_map=token_hash_map,
             xor_config=xor_config,
+            xor_code=xor_code,
+            sparse_config=sparse_config,
+            sparse_linear_solve_enabled=sparse_xor_enable_linear_solve,
+            sparse_max_component_unknowns=sparse_xor_max_component_unknowns,
             source_layout=source_layout,
             wire_interleaving=wire_interleaving,
             channel_config=case_channel_config,
@@ -768,7 +977,7 @@ def _run_hybrid_cases(
                 case_id=case_id,
                 case=case,
                 model_label=model_label,
-                strategy=_strategy(real_llada=real_llada, hybrid_mode=hybrid_mode),
+                strategy=_strategy(real_llada=real_llada, hybrid_mode=hybrid_mode, xor_code=xor_code),
                 seed=case_seed,
                 loss_rate=loss_rate,
                 tokens_per_packet=tokens_per_packet,
@@ -787,7 +996,7 @@ def _run_hybrid_cases(
                 "run_id": run_id,
                 "case_id": case_id,
                 "model_label": model_label,
-                "strategy": _strategy(real_llada=real_llada, hybrid_mode=hybrid_mode),
+                "strategy": _strategy(real_llada=real_llada, hybrid_mode=hybrid_mode, xor_code=xor_code),
                 "case": case.to_dict(),
             }
         )
@@ -844,6 +1053,7 @@ def _result_row(
         "oracle_hash_metadata": False,
         "hash_bits": hash_bits,
         "hybrid_mode": case.hybrid_mode,
+        "xor_code": case.xor_code,
         "xor_overhead_bits_per_token": xor_overhead_bits_per_token,
         "source_layout": source_layout.mode,
         "source_chunk_size": source_layout.chunk_size,
@@ -894,11 +1104,13 @@ def _result_row(
         "model_proposal_calls": diagnostics.get("model_proposal_calls"),
         "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode"),
         "proposal_interface_used": diagnostics.get("proposal_interface_used"),
-        "parity_equation_count": len(equations_from_parity_packets(case.encoded.parity_packets)),
-        "parity_received_equation_count": len(equations_from_parity_packets(case.loss_result.received)),
+        "parity_equation_count": diagnostics.get("parity_equation_count", 0),
+        "parity_received_equation_count": diagnostics.get("parity_received_equation_count", 0),
         "parity_peel_iterations": case.initial_peel.peel_iteration_count,
         "parity_peel_recovered_count": case.initial_peel.recovered_count,
         "parity_hash_conflict_count": case.initial_peel.conflict_count,
+        **_linear_solver_result_fields(case.initial_peel.linear_solver_diagnostics),
+        **_sparse_result_fields(case.sparse_diagnostics),
         "iterative_peel_enabled": diagnostics.get("iterative_peel_enabled", False),
         "iterative_peel_passes": diagnostics.get("iterative_peel_passes", 0),
         "iterative_peel_recovered_count": diagnostics.get("iterative_peel_recovered_count", 0),
@@ -915,6 +1127,34 @@ def _result_row(
             0,
         ),
         "iterative_peel_conflict_count": diagnostics.get("iterative_peel_conflict_count", 0),
+        "iterative_linear_solver_enabled": diagnostics.get(
+            "iterative_linear_solver_enabled",
+            False,
+        ),
+        "iterative_linear_solver_components_seen": diagnostics.get(
+            "iterative_linear_solver_components_seen",
+            0,
+        ),
+        "iterative_linear_solver_components_solved": diagnostics.get(
+            "iterative_linear_solver_components_solved",
+            0,
+        ),
+        "iterative_linear_solver_tokens_recovered": diagnostics.get(
+            "iterative_linear_solver_tokens_recovered",
+            0,
+        ),
+        "iterative_linear_solver_rank_deficient_count": diagnostics.get(
+            "iterative_linear_solver_rank_deficient_count",
+            0,
+        ),
+        "iterative_linear_solver_validation_conflict_count": diagnostics.get(
+            "iterative_linear_solver_validation_conflict_count",
+            0,
+        ),
+        "iterative_linear_solver_too_large_count": diagnostics.get(
+            "iterative_linear_solver_too_large_count",
+            0,
+        ),
         "iterative_peel_recovered_positions": _csv_sequence(
             diagnostics.get("iterative_peel_recovered_positions", ())
         ),
@@ -954,10 +1194,14 @@ def _manifest(
     hash_constraint_schedule: str,
     hybrid_mode: str,
     parity_filter_fallback: bool,
+    xor_code: str,
+    sparse_xor_max_component_unknowns: int,
+    sparse_xor_enable_linear_solve: bool,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
     xor_config: XorParityConfig,
+    sparse_config: SparseFountainXorConfig,
     hash_profile_info: dict[str, Any],
     dataset_info: dict[str, Any] | None,
     real_llada: bool,
@@ -973,7 +1217,7 @@ def _manifest(
         "not_a_research_claim_warning": MICRO_EVAL_WARNING,
         "micro_eval": True,
         "opt_in_required": real_llada,
-        "strategy": _strategy(real_llada=real_llada, hybrid_mode=hybrid_mode),
+        "strategy": _strategy(real_llada=real_llada, hybrid_mode=hybrid_mode, xor_code=xor_code),
         "config": {
             "sample_lengths": list(sample_lengths),
             "loss_rate": loss_rate,
@@ -986,13 +1230,17 @@ def _manifest(
             "editable_update_mode": editable_update_mode,
             "hash_constraint_schedule": hash_constraint_schedule,
             "hybrid_mode": hybrid_mode,
+            "xor_code": xor_code,
             "parity_filter_fallback": parity_filter_fallback,
+            "sparse_xor_max_component_unknowns": sparse_xor_max_component_unknowns,
+            "sparse_xor_enable_linear_solve": sparse_xor_enable_linear_solve,
             "protection_mode": HYBRID_PROTECTION_MODE,
             "oracle_hash_metadata": False,
             "source_layout": source_layout.to_dict(),
             "wire_interleaving": wire_interleaving.to_dict(),
             "channel": channel_config.to_dict(),
             "xor_parity": xor_config.to_dict(),
+            "sparse_fountain_xor": sparse_config.to_dict(),
             "sample_generation": _sample_generation_info(dataset_info),
         },
         "hash_profile": hash_profile_info,
@@ -1021,6 +1269,8 @@ def _run_id(
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
     hybrid_mode: str,
+    xor_code: str,
+    sparse_xor_seed: int,
     editable_update_mode: str,
     hash_constraint_schedule: str,
 ) -> str:
@@ -1029,17 +1279,18 @@ def _run_id(
     model = model_label.replace("/", "-")
     return (
         f"{runner}|{model}|hash{hash_bits}|xorbits{xor_overhead_bits_per_token:g}|"
-        f"{hybrid_mode}|loss{loss_rate:g}|lengths{lengths}|tpp{tokens_per_packet}|"
+        f"{xor_code}|{hybrid_mode}|loss{loss_rate:g}|lengths{lengths}|tpp{tokens_per_packet}|"
         f"seed{seed}|source-{source_layout.mode}-chunk{source_chunk}|"
         f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}|"
         f"channel-{channel_config.mode}|update-{editable_update_mode}|"
-        f"hash-schedule-{hash_constraint_schedule}"
+        f"hash-schedule-{hash_constraint_schedule}|sparse-seed{sparse_xor_seed}"
     )
 
 
-def _strategy(*, real_llada: bool, hybrid_mode: str) -> str:
+def _strategy(*, real_llada: bool, hybrid_mode: str, xor_code: str = XOR_CODE_STRIPE) -> str:
     prefix = "RealLLaDA" if real_llada else "FakeHybrid"
-    return f"{prefix}_HashXOR_{hybrid_mode}"
+    suffix = "" if xor_code == XOR_CODE_STRIPE else "_SparseFountain"
+    return f"{prefix}_HashXOR{suffix}_{hybrid_mode}"
 
 
 def _resolve_sample_lengths(
@@ -1074,6 +1325,8 @@ def _validate_common_config(
     vocab_size: int,
     steps: int,
     hybrid_mode: str,
+    xor_code: str = XOR_CODE_STRIPE,
+    sparse_xor_max_component_unknowns: int = DEFAULT_SPARSE_XOR_MAX_COMPONENT_UNKNOWNS,
 ) -> None:
     if not sample_lengths:
         raise ValueError("sample_lengths must be non-empty")
@@ -1093,12 +1346,21 @@ def _validate_common_config(
     if steps <= 0:
         raise ValueError("steps must be positive")
     _validate_hybrid_mode(hybrid_mode)
+    _validate_xor_code(xor_code)
+    if sparse_xor_max_component_unknowns <= 0:
+        raise ValueError("sparse_xor_max_component_unknowns must be positive")
 
 
 def _validate_hybrid_mode(hybrid_mode: str) -> None:
     if hybrid_mode not in VALID_HYBRID_MODES:
         modes = ", ".join(sorted(VALID_HYBRID_MODES))
         raise ValueError(f"hybrid_mode must be one of: {modes}")
+
+
+def _validate_xor_code(xor_code: str) -> None:
+    if xor_code not in VALID_XOR_CODES:
+        codes = ", ".join(sorted(VALID_XOR_CODES))
+        raise ValueError(f"xor_code must be one of: {codes}")
 
 
 def _validate_iterative_peel_decoder_config(config: DiffusionDecodingConfig) -> None:
@@ -1124,7 +1386,7 @@ def _known_tokens_from_decoder_state(
 
 def _merge_protected_source_and_parity_packets(
     *,
-    encoded: XorParityEncoded,
+    encoded: XorParityEncoded | SparseFountainXorEncoded,
     protected_source_packets: Sequence[Packet],
 ) -> tuple[Packet, ...]:
     protected_by_index = {
@@ -1231,6 +1493,9 @@ def _decoding_result_with_hybrid_diagnostics(
     final_audit: XorAuditResult,
     parity_filter_diagnostics: dict[str, Any],
     iterative_peel_diagnostics: dict[str, Any],
+    linear_solver_diagnostics: dict[str, Any],
+    sparse_diagnostics: dict[str, Any],
+    xor_code: str,
     parity_equation_count: int,
     parity_received_equation_count: int,
 ) -> DecodingResult:
@@ -1238,6 +1503,7 @@ def _decoding_result_with_hybrid_diagnostics(
     diagnostics.update(
         {
             "hybrid_mode": hybrid_mode,
+            "xor_code": xor_code,
             "parity_equation_count": parity_equation_count,
             "parity_received_equation_count": parity_received_equation_count,
             "parity_peel_iterations": initial_peel.peel_iteration_count,
@@ -1245,6 +1511,8 @@ def _decoding_result_with_hybrid_diagnostics(
             "parity_hash_conflict_count": initial_peel.conflict_count,
             "parity_equations_satisfied": final_audit.satisfied_count,
             "parity_equations_violated": final_audit.violated_count,
+            **_linear_solver_result_fields(linear_solver_diagnostics),
+            **_sparse_result_fields(sparse_diagnostics),
             **parity_filter_diagnostics,
             **iterative_peel_diagnostics,
         }
@@ -1288,6 +1556,66 @@ def _empty_filter_diagnostics() -> dict[str, Any]:
     }
 
 
+def _empty_linear_solver_diagnostics(*, enabled: bool = False) -> dict[str, Any]:
+    return {
+        "linear_solver_enabled": enabled,
+        "linear_solver_components_seen": 0,
+        "linear_solver_components_solved": 0,
+        "linear_solver_tokens_recovered": 0,
+        "linear_solver_rank_deficient_count": 0,
+        "linear_solver_validation_conflict_count": 0,
+        "linear_solver_too_large_count": 0,
+    }
+
+
+def _linear_solver_result_fields(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    data = {**_empty_linear_solver_diagnostics(), **dict(diagnostics or {})}
+    return {
+        "linear_solver_enabled": data["linear_solver_enabled"],
+        "linear_solver_components_seen": data["linear_solver_components_seen"],
+        "linear_solver_components_solved": data["linear_solver_components_solved"],
+        "linear_solver_tokens_recovered": data["linear_solver_tokens_recovered"],
+        "linear_solver_rank_deficient_count": data["linear_solver_rank_deficient_count"],
+        "linear_solver_validation_conflict_count": data["linear_solver_validation_conflict_count"],
+        "linear_solver_too_large_count": data["linear_solver_too_large_count"],
+    }
+
+
+def _empty_sparse_diagnostics() -> dict[str, Any]:
+    return {
+        "equation_count": 0,
+        "budget_exhausted": False,
+        "coverage_enabled": False,
+        "coverage_possible": False,
+        "coverage_pass_degree": 0,
+        "coverage_zero_count": 0,
+        "coverage_min": 0,
+        "coverage_mean": 0.0,
+        "actual_mean_degree": 0.0,
+        "degree_histogram": {},
+    }
+
+
+def _sparse_result_fields(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    data = {**_empty_sparse_diagnostics(), **dict(diagnostics or {})}
+    return {
+        "sparse_equation_count": data["equation_count"],
+        "sparse_budget_exhausted": data["budget_exhausted"],
+        "sparse_coverage_enabled": data["coverage_enabled"],
+        "sparse_coverage_possible": data["coverage_possible"],
+        "sparse_coverage_pass_degree": data["coverage_pass_degree"],
+        "sparse_coverage_zero_count": data["coverage_zero_count"],
+        "sparse_coverage_min": data["coverage_min"],
+        "sparse_coverage_mean": data["coverage_mean"],
+        "sparse_actual_mean_degree": data["actual_mean_degree"],
+        "sparse_degree_histogram": json.dumps(
+            data["degree_histogram"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+
+
 def _empty_iterative_peel_diagnostics() -> dict[str, Any]:
     return {
         "iterative_peel_enabled": False,
@@ -1296,6 +1624,13 @@ def _empty_iterative_peel_diagnostics() -> dict[str, Any]:
         "iterative_peel_recovered_positions": (),
         "iterative_peel_recovered_count_by_step": (),
         "iterative_peel_conflict_count": 0,
+        "iterative_linear_solver_enabled": False,
+        "iterative_linear_solver_components_seen": 0,
+        "iterative_linear_solver_components_solved": 0,
+        "iterative_linear_solver_tokens_recovered": 0,
+        "iterative_linear_solver_rank_deficient_count": 0,
+        "iterative_linear_solver_validation_conflict_count": 0,
+        "iterative_linear_solver_too_large_count": 0,
         "iterative_peel_hash_conflict_count": 0,
         "iterative_peel_special_token_conflict_count": 0,
         "iterative_peel_vocab_conflict_count": 0,

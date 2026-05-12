@@ -21,6 +21,15 @@ from diffusion_fec.baselines.streaming_window import (
     encode_streaming_window,
     reconstruct_streaming_window,
 )
+from diffusion_fec.baselines.sparse_fountain_xor import (
+    SPARSE_FOUNTAIN_XOR_SCHEME,
+    SparseEquationSpec,
+    SparseFountainXorConfig,
+    SparseFountainXorEncoded,
+    build_sparse_equation_specs,
+    encode_sparse_fountain_xor,
+    parse_degree_distribution,
+)
 from diffusion_fec.baselines.xor_parity import (
     XOR_PARITY_SCHEME,
     XorParityConfig,
@@ -35,8 +44,10 @@ from diffusion_fec.baselines.xor_equations import (
     XorTokenEquation,
     audit_xor_equations,
     equations_from_parity_packets,
+    equations_from_sparse_fountain_packets,
     known_tokens_from_data_packets,
     peel_xor_equations,
+    solve_xor_equations,
 )
 
 __all__ = [
@@ -45,6 +56,10 @@ __all__ = [
     "LTFountainConfig",
     "LTFountainEncoded",
     "STREAMING_WINDOW_SCHEME",
+    "SPARSE_FOUNTAIN_XOR_SCHEME",
+    "SparseEquationSpec",
+    "SparseFountainXorConfig",
+    "SparseFountainXorEncoded",
     "StreamingWindowConfig",
     "StreamingWindowEncoded",
     "XOR_PARITY_SCHEME",
@@ -57,15 +72,20 @@ __all__ = [
     "audit_xor_equations",
     "encode_xor_parity",
     "encode_lt_fountain",
+    "encode_sparse_fountain_xor",
     "encode_streaming_window",
     "equations_from_parity_packets",
+    "equations_from_sparse_fountain_packets",
     "estimate_hash_overhead_ratio",
+    "build_sparse_equation_specs",
     "known_tokens_from_data_packets",
+    "parse_degree_distribution",
     "peel_xor_equations",
     "reconstruct_xor_parity",
     "reconstruct_lt_fountain",
     "reconstruct_streaming_window",
     "repair_token_overhead_ratio",
     "select_closest_repair_count",
+    "solve_xor_equations",
     "token_bit_width_for_vocab",
 ]

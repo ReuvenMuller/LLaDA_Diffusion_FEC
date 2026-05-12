@@ -272,6 +272,15 @@ hash/XOR labels.
 Rows also include `iterative_peel_*` diagnostics for the cooperative parity
 repair path.
 
+Sparse fountain XOR is available with `--xor-code sparse_fountain`. It is a
+Raptor/LT-inspired Sparse Fountain XOR validation path with bounded GF(2)
+component solving, not RaptorQ. Sparse equations are generated from shared
+seed/config under a strict repair-token budget; equation-position lists in
+artifacts are audit metadata and are not charged as transmitted overhead in this
+validation layer. The solver peels first, then solves only unique small GF(2)
+components and promotes tokens only after vocab, special-token, and hash
+validation.
+
 LT/fountain baseline micro-eval:
 
 ```powershell

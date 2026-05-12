@@ -43,6 +43,8 @@ from diffusion_fec.experiments.hybrid_eval import (
     HYBRID_MODE_ITERATIVE_PEEL,
     HYBRID_MODE_PARITY_FILTER,
     HYBRID_MODE_PRE_PEEL_ONLY,
+    XOR_CODE_SPARSE_FOUNTAIN,
+    XOR_CODE_STRIPE,
 )
 from diffusion_fec.experiments.micro_eval import (
     DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS,
@@ -259,6 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-llada-tokenized-artifact", action="store_true")
     parser.add_argument("--micro-eval", action="store_true")
     parser.add_argument("--xor-parity-micro-eval", action="store_true")
+    parser.add_argument("--sparse-fountain-xor-micro-eval", action="store_true")
     parser.add_argument("--hybrid-xor-hash-micro-eval", action="store_true")
     parser.add_argument("--real-llada-hybrid-xor-hash-micro-eval", action="store_true")
     parser.add_argument("--lt-fountain-micro-eval", action="store_true")
@@ -345,6 +348,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--xor-stripe-size", type=int, default=4)
     parser.add_argument("--xor-stripe-stride", type=int)
     parser.add_argument(
+        "--xor-code",
+        default=XOR_CODE_STRIPE,
+        choices=[XOR_CODE_STRIPE, XOR_CODE_SPARSE_FOUNTAIN],
+    )
+    parser.add_argument("--sparse-xor-seed", type=int, default=7)
+    parser.add_argument("--sparse-xor-coverage", default="on", choices=["on", "off"])
+    parser.add_argument(
+        "--sparse-xor-degree-distribution",
+        default="2:0.5,3:0.35,4:0.15",
+    )
+    parser.add_argument("--sparse-xor-max-coverage-degree", type=int, default=8)
+    parser.add_argument("--sparse-xor-max-component-unknowns", type=int, default=8)
+    parser.add_argument(
+        "--sparse-xor-enable-linear-solve",
+        default="on",
+        choices=["on", "off"],
+    )
+    parser.add_argument(
         "--hybrid-mode",
         default=HYBRID_MODE_PARITY_FILTER,
         choices=[HYBRID_MODE_PRE_PEEL_ONLY, HYBRID_MODE_PARITY_FILTER, HYBRID_MODE_ITERATIVE_PEEL],
@@ -408,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         args.build_llada_tokenized_artifact,
         args.micro_eval,
         args.xor_parity_micro_eval,
+        args.sparse_fountain_xor_micro_eval,
         args.hybrid_xor_hash_micro_eval,
         args.real_llada_hybrid_xor_hash_micro_eval,
         args.lt_fountain_micro_eval,
@@ -419,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     if sum(1 for selected in selected_runners if selected) > 1:
         parser.error(
             "--build-llada-tokenized-artifact, --micro-eval, --xor-parity-micro-eval, "
+            "--sparse-fountain-xor-micro-eval, "
             "--hybrid-xor-hash-micro-eval, --real-llada-hybrid-xor-hash-micro-eval, "
             "--lt-fountain-micro-eval, --streaming-window-micro-eval, --synthetic-sweep, "
             "--real-llada-smoke, and --real-llada-micro-eval are separate runners"
@@ -571,6 +594,39 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.sparse_fountain_xor_micro_eval:
+        from diffusion_fec.experiments.classical_micro_eval import run_sparse_fountain_xor_micro_eval
+
+        run_sparse_fountain_xor_micro_eval(
+            output_dir=args.output_dir,
+            sample_lengths=_parse_sample_lengths(
+                args.sample_lengths,
+                default=(
+                    tuple(len(sample.token_ids) for sample in dataset_samples)
+                    if dataset_samples is not None
+                    else DEFAULT_MICRO_EVAL_SAMPLE_LENGTHS
+                ),
+            ),
+            samples=dataset_samples,
+            dataset_info=dataset_info,
+            loss_rate=args.loss_rate,
+            seed=args.seed,
+            tokens_per_packet=args.tokens_per_packet,
+            hash_bits=args.hash_bits,
+            xor_overhead_bits_per_token=args.xor_overhead_bits_per_token,
+            vocab_size=args.vocab_size,
+            source_layout=_source_layout_from_args(args),
+            wire_interleaving=_wire_interleaving_from_args(args),
+            channel_config=_channel_config_from_args(args),
+            sparse_xor_seed=args.sparse_xor_seed,
+            sparse_xor_coverage=args.sparse_xor_coverage == "on",
+            sparse_xor_degree_distribution=args.sparse_xor_degree_distribution,
+            sparse_xor_max_coverage_degree=args.sparse_xor_max_coverage_degree,
+            sparse_xor_max_component_unknowns=args.sparse_xor_max_component_unknowns,
+            sparse_xor_enable_linear_solve=args.sparse_xor_enable_linear_solve == "on",
+        )
+        return 0
+
     if args.hybrid_xor_hash_micro_eval:
         from diffusion_fec.experiments.hybrid_eval import run_hybrid_xor_hash_micro_eval
 
@@ -597,6 +653,13 @@ def main(argv: list[str] | None = None) -> int:
             hash_constraint_schedule=args.hash_constraint_schedule,
             hybrid_mode=args.hybrid_mode,
             parity_filter_fallback=args.parity_filter_fallback == "on",
+            xor_code=args.xor_code,
+            sparse_xor_seed=args.sparse_xor_seed,
+            sparse_xor_coverage=args.sparse_xor_coverage == "on",
+            sparse_xor_degree_distribution=args.sparse_xor_degree_distribution,
+            sparse_xor_max_coverage_degree=args.sparse_xor_max_coverage_degree,
+            sparse_xor_max_component_unknowns=args.sparse_xor_max_component_unknowns,
+            sparse_xor_enable_linear_solve=args.sparse_xor_enable_linear_solve == "on",
             source_layout=_source_layout_from_args(args),
             wire_interleaving=_wire_interleaving_from_args(args),
             channel_config=_channel_config_from_args(args),
@@ -741,6 +804,13 @@ def main(argv: list[str] | None = None) -> int:
                 hash_constraint_schedule=args.hash_constraint_schedule,
                 hybrid_mode=args.hybrid_mode,
                 parity_filter_fallback=args.parity_filter_fallback == "on",
+                xor_code=args.xor_code,
+                sparse_xor_seed=args.sparse_xor_seed,
+                sparse_xor_coverage=args.sparse_xor_coverage == "on",
+                sparse_xor_degree_distribution=args.sparse_xor_degree_distribution,
+                sparse_xor_max_coverage_degree=args.sparse_xor_max_coverage_degree,
+                sparse_xor_max_component_unknowns=args.sparse_xor_max_component_unknowns,
+                sparse_xor_enable_linear_solve=args.sparse_xor_enable_linear_solve == "on",
                 local_files_only=args.llada_local_files_only,
                 allow_cpu=args.allow_cpu_real_llada,
                 hash_profile_dir=args.hash_profile_dir,
