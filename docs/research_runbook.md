@@ -680,6 +680,40 @@ The command writes `case_summary.csv`, `step_timing.csv`,
 burst `sparse_fountain iterative_rollback` cells with the same frozen
 10-sample settings. Do not run a large sweep for this diagnostic pass.
 
+The old rollback run was reanalysed successfully:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-rollback-20260512_030702/diagnostics
+```
+
+It produced 60 case summaries and 466 wrong channel-lost token rows, but no
+timing breakdown because those fields did not exist in the old artifacts.
+
+The focused instrumented rerun completed here:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-diagnostics-20260513_165302
+```
+
+It reran only `sparse_fountain iterative_rollback` for IID and burst with the
+same frozen 10-sample settings. The headline timing split showed that IID
+latency is dominated by candidate construction, not LLaDA forward time:
+
+| channel | recovery | edit | latency | model forward | candidate construction | parity filter | hook | XOR peel | rollback | mean candidates | max candidates | full scans |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| IID | 0.8397 | 10.2 | 5.4393 | 0.2958 | 5.0833 | 1.1493 | 0.0030 | 0.0006 | 0.0002 | 74760.2 | 126462.0 | 0.0 |
+| burst | 0.9844 | 0.5 | 0.8710 | 0.2677 | 0.5442 | 0.0476 | 0.0024 | 0.0006 | 0.0001 | 7883.0 | 8035.4 | 0.0 |
+
+The parity-filter shortcut worked as intended: `full scans` stayed at `0.0`.
+The remaining IID latency is therefore mostly from scoring/selecting over very
+large candidate sets. The error taxonomy also shows that most IID wrong tokens
+are not parity-constrained by surviving equations: 69 of 102 wrong IID
+channel-lost positions had zero surviving sparse parity equations, and only 17
+of 102 had hash metadata. Burst had only 5 wrong channel-lost positions, all
+with hash metadata. This points to the next method work: improve transmitted
+hash coverage and parity coverage for IID-scattered erasures, and consider
+top-k/endgame search only after candidate-set size is reduced.
+
 The channel-loss reanalysis artifacts are written under:
 
 ```text
