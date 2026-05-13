@@ -282,6 +282,16 @@ repair path. Rollback runs additionally include `rollback_*` diagnostics for
 conflict events, rolled-back positions, banned tokens, provenance invalidations,
 extra repair rounds, and masks left after the rollback budget.
 
+Sparse hybrid runs after the diagnostic slice also include timing and candidate
+filter diagnostics. `model_forward_time_sec` measures LLaDA forward time;
+`candidate_construction_time_sec`, `parity_candidate_filter_time_sec`,
+`xor_peel_time_sec`, `linear_solver_time_sec`, `post_commit_hook_time_sec`, and
+`rollback_time_sec` split the decoder-side overhead. The parity filter now uses
+a behavior-equivalent required-token shortcut for determined XOR equations and
+reports `parity_filter_required_token_checks`,
+`parity_filter_full_scan_count`, and
+`parity_filter_candidate_membership_checks`.
+
 Sparse fountain XOR is available with `--xor-code sparse_fountain`. It is a
 Raptor/LT-inspired Sparse Fountain XOR validation path with bounded GF(2)
 component solving, not RaptorQ. Sparse equations are generated from shared

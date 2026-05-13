@@ -646,6 +646,40 @@ cut mean parity violations roughly in half. The cost was a small increase in
 forward calls/latency and a mean `0.1` remaining mask tokens after the rollback
 budget. This is promising decoder-design validation, not a final result.
 
+### Sparse Hybrid Diagnostics
+
+After the rollback validation, the sparse-hybrid diagnostic slice added a
+behavior-equivalent parity-filter optimization and finer timing fields. The
+filter now computes the required token for determined XOR equations directly
+instead of scanning every hash-bucket candidate. Runs after this slice report:
+
+- `model_forward_time_sec`
+- `candidate_construction_time_sec`
+- `parity_candidate_filter_time_sec`
+- `xor_peel_time_sec`
+- `linear_solver_time_sec`
+- `post_commit_hook_time_sec`
+- `rollback_time_sec`
+- `total_decode_time_sec`
+- `parity_filter_required_token_checks`
+- `parity_filter_full_scan_count`
+- `parity_filter_candidate_membership_checks`
+
+Old rollback artifacts can still be reanalysed for failure taxonomy, but they
+do not contain the timing breakdown above. Use:
+
+```bash
+python -m diffusion_fec.analysis.diagnostics \
+  --run-root /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-rollback-20260512_030702 \
+  --output-dir /mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-rollback-20260512_030702/diagnostics
+```
+
+The command writes `case_summary.csv`, `step_timing.csv`,
+`error_taxonomy.csv`, `failure_examples.md`, and `diagnostic_summary.md`. If
+`diagnostic_summary.md` says timing is missing, rerun only the focused IID and
+burst `sparse_fountain iterative_rollback` cells with the same frozen
+10-sample settings. Do not run a large sweep for this diagnostic pass.
+
 The channel-loss reanalysis artifacts are written under:
 
 ```text

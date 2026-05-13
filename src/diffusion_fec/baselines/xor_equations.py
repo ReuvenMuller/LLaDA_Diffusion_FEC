@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 
 from diffusion_fec.baselines.xor_parity import (
@@ -394,9 +395,14 @@ def solve_xor_equations(
         "linear_solver_rank_deficient_count": 0,
         "linear_solver_validation_conflict_count": 0,
         "linear_solver_too_large_count": 0,
+        "xor_peel_time_sec": 0.0,
+        "linear_solver_time_sec": 0.0,
+        "total_xor_solve_time_sec": 0.0,
     }
 
+    start_time = perf_counter()
     while True:
+        peel_start = perf_counter()
         peel = peel_xor_equations(
             equations=equations,
             known_tokens=known,
@@ -405,6 +411,7 @@ def solve_xor_equations(
             vocab_size=vocab_size,
             banned_token_ids=banned_token_ids,
         )
+        diagnostics["xor_peel_time_sec"] += perf_counter() - peel_start
         new_peel_tokens = {
             position: token_id
             for position, token_id in peel.recovered_tokens.items()
@@ -424,6 +431,7 @@ def solve_xor_equations(
 
         if not enable_linear_solve:
             break
+        linear_start = perf_counter()
         linear_progress = _solve_linear_components_once(
             equations=equations,
             known_tokens=known,
@@ -437,8 +445,10 @@ def solve_xor_equations(
             max_component_unknowns=max_component_unknowns,
             diagnostics=diagnostics,
         )
+        diagnostics["linear_solver_time_sec"] += perf_counter() - linear_start
         if not linear_progress:
             break
+    diagnostics["total_xor_solve_time_sec"] = perf_counter() - start_time
 
     return XorPeelResult(
         known_tokens=known,
@@ -764,6 +774,14 @@ class ParityCandidateFilter:
         self.call_count = 0
         self.rejected_count = 0
         self.fallback_count = 0
+        self.required_token_checks = 0
+        self.full_scan_count = 0
+        self.candidate_membership_checks = 0
+        self.total_input_candidate_count = 0
+        self.total_output_candidate_count = 0
+        self.max_input_candidate_count = 0
+        self.max_output_candidate_count = 0
+        self.time_sec = 0.0
 
     def __call__(
         self,
@@ -774,39 +792,90 @@ class ParityCandidateFilter:
         step: int,
         full_position: int,
     ) -> tuple[int, ...]:
+        start_time = perf_counter()
         self.call_count += 1
         candidates = tuple(int(token_id) for token_id in candidate_token_ids)
+        self.total_input_candidate_count += len(candidates)
+        self.max_input_candidate_count = max(self.max_input_candidate_count, len(candidates))
         if not candidates:
+            self.time_sec += perf_counter() - start_time
             return candidates
         relevant = self._equations_by_position.get(int(entry.position), ())
         if not relevant:
+            self.total_output_candidate_count += len(candidates)
+            self.max_output_candidate_count = max(self.max_output_candidate_count, len(candidates))
+            self.time_sec += perf_counter() - start_time
             return candidates
 
-        kept = tuple(
-            token_id
-            for token_id in candidates
-            if self._candidate_satisfies_relevant_equations(
-                position=int(entry.position),
-                candidate_token_id=token_id,
-                input_ids=input_ids,
-                equations=relevant,
-            )
+        kept = self._candidate_tokens_from_required_values(
+            position=int(entry.position),
+            candidates=candidates,
+            input_ids=input_ids,
+            equations=relevant,
         )
         self.rejected_count += len(candidates) - len(kept)
         if kept:
+            self.total_output_candidate_count += len(kept)
+            self.max_output_candidate_count = max(self.max_output_candidate_count, len(kept))
+            self.time_sec += perf_counter() - start_time
             return kept
         if self.fallback_on_empty:
             self.fallback_count += 1
+            self.total_output_candidate_count += len(candidates)
+            self.max_output_candidate_count = max(self.max_output_candidate_count, len(candidates))
+            self.time_sec += perf_counter() - start_time
             return candidates
+        self.time_sec += perf_counter() - start_time
         return kept
 
     def diagnostics(self) -> dict[str, Any]:
+        mean_input = self.total_input_candidate_count / self.call_count if self.call_count else 0.0
+        mean_output = self.total_output_candidate_count / self.call_count if self.call_count else 0.0
         return {
             "parity_candidate_filter_calls": self.call_count,
+            "parity_candidate_filter_equation_count": len(self.equations),
             "parity_candidate_rejections": self.rejected_count,
             "parity_filter_fallback_count": self.fallback_count,
             "parity_filter_fallback_enabled": self.fallback_on_empty,
+            "parity_filter_required_token_checks": self.required_token_checks,
+            "parity_filter_full_scan_count": self.full_scan_count,
+            "parity_filter_candidate_membership_checks": self.candidate_membership_checks,
+            "parity_filter_time_sec": self.time_sec,
+            "parity_filter_mean_input_candidate_count": mean_input,
+            "parity_filter_max_input_candidate_count": self.max_input_candidate_count,
+            "parity_filter_mean_output_candidate_count": mean_output,
+            "parity_filter_max_output_candidate_count": self.max_output_candidate_count,
         }
+
+    def _candidate_tokens_from_required_values(
+        self,
+        *,
+        position: int,
+        candidates: tuple[int, ...],
+        input_ids: Sequence[int],
+        equations: Sequence[XorTokenEquation],
+    ) -> tuple[int, ...]:
+        required_values: set[int] = set()
+        for equation in equations:
+            required_token_id = self._required_token_if_determined(
+                equation=equation,
+                position=position,
+                input_ids=input_ids,
+            )
+            if required_token_id is not None:
+                self.required_token_checks += 1
+                required_values.add(required_token_id)
+
+        if not required_values:
+            return candidates
+        if len(required_values) != 1:
+            return ()
+
+        required_token_id = next(iter(required_values))
+        self.candidate_membership_checks += 1
+        if required_token_id in set(candidates):
+            return (required_token_id,)
+        return ()
 
     def _candidate_satisfies_relevant_equations(
         self,

@@ -769,4 +769,13 @@ def test_sparse_iterative_rollback_artifacts_include_rollback_diagnostics(tmp_pa
     assert row["rollback_enabled"] == "True"
     assert "rollback_event_count" in row
     assert "rollback_banned_tokens_by_position" in row
+    assert "model_forward_time_sec" in row
+    assert "candidate_construction_time_sec" in row
+    assert "parity_candidate_filter_time_sec" in row
+    assert "xor_peel_time_sec" in row
+    assert "linear_solver_time_sec" in row
+    assert "rollback_time_sec" in row
+    assert "mean_candidate_count" in row
+    assert "parity_filter_required_token_checks" in row
     assert event["case"]["decoding_result"]["diagnostics"]["rollback_enabled"] is True
+    assert "step_diagnostics" in event["case"]["decoding_result"]["diagnostics"]

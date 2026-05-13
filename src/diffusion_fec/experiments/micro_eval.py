@@ -615,7 +615,23 @@ def _normalize_case_for_artifacts(data: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(data)
     decoding_result = dict(normalized["decoding_result"])
     decoding_result["decode_latency_sec"] = 0.0
+    diagnostics = dict(decoding_result.get("diagnostics", {}))
+    decoding_result["diagnostics"] = _zero_timing_diagnostics(diagnostics)
     normalized["decoding_result"] = decoding_result
+    return normalized
+
+
+def _zero_timing_diagnostics(data: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(data)
+    for key in list(normalized):
+        if key.endswith("_time_sec") or key == "total_decode_time_sec":
+            normalized[key] = 0.0
+    nested = normalized.get("candidate_filter_diagnostics")
+    if isinstance(nested, dict):
+        normalized["candidate_filter_diagnostics"] = _zero_timing_diagnostics(nested)
+    nested = normalized.get("post_commit_hook_diagnostics")
+    if isinstance(nested, dict):
+        normalized["post_commit_hook_diagnostics"] = _zero_timing_diagnostics(nested)
     return normalized
 
 

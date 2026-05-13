@@ -248,10 +248,11 @@ def decode_masked_diffusion(
 
     if masks.editable_count == 0:
         reconstructed_tokens = tuple(x[prompt_length:])
+        no_edit_latency = perf_counter() - start_time
         return DecodingResult(
             reconstructed_text=_decode_tokens(model, reconstructed_tokens),
             reconstructed_tokens=reconstructed_tokens,
-            decode_latency_sec=perf_counter() - start_time,
+            decode_latency_sec=no_edit_latency,
             steps=0,
             fixed_token_count=masks.fixed_count,
             editable_token_count=0,
@@ -273,6 +274,17 @@ def decode_masked_diffusion(
                 "candidate_filter_calls": 0,
                 "candidate_filter_rejections": 0,
                 "candidate_filter_diagnostics": _candidate_filter_diagnostics(candidate_filter),
+                "mean_candidate_count": 0.0,
+                "max_candidate_count": 0,
+                "model_forward_time_sec": 0.0,
+                "candidate_construction_time_sec": 0.0,
+                "parity_candidate_filter_time_sec": 0.0,
+                "xor_peel_time_sec": 0.0,
+                "linear_solver_time_sec": 0.0,
+                "post_commit_hook_time_sec": 0.0,
+                "rollback_time_sec": 0.0,
+                "total_decode_time_sec": no_edit_latency,
+                "step_diagnostics": (),
                 "post_commit_hook_available": post_commit_hook_available,
                 "post_commit_hook_used": False,
                 "post_commit_hook_calls": 0,
@@ -301,6 +313,13 @@ def decode_masked_diffusion(
     post_commit_hook_calls = 0
     post_commit_fixed_positions_per_step: list[int] = []
     post_commit_rollback_positions_per_step: list[int] = []
+    step_diagnostics: list[dict[str, Any]] = []
+    candidate_count_sum = 0
+    candidate_count_seen = 0
+    candidate_count_max = 0
+    candidate_construction_time_sec = 0.0
+    model_forward_time_sec = 0.0
+    post_commit_hook_time_sec = 0.0
     rollback_enabled = bool(getattr(post_commit_hook, "rollback_enabled", False))
     rollback_extra_steps = _non_negative_int_attr(
         post_commit_hook,
@@ -336,12 +355,26 @@ def decode_masked_diffusion(
             if not editable_target_positions:
                 break
 
+            remaining_masks_before = len(editable_target_positions)
+            step_filter_calls_before = candidate_filter_calls
+            step_filter_rejections_before = int(
+                _candidate_filter_diagnostics(candidate_filter).get(
+                    "parity_candidate_rejections",
+                    0,
+                )
+                or 0
+            )
+            hash_guided_editable_count, unguided_editable_count = _editable_state_counts(
+                plan=plan,
+                target_positions=editable_target_positions,
+            )
             hash_enforced_steps.append(step)
             remaining_steps = max(1, rollback_total_steps - step)
             if step < config.steps:
                 remaining_steps = config.steps - step
             transfer_count = max(1, ceil(len(editable_target_positions) / remaining_steps))
 
+            proposal_start = perf_counter()
             if proposal_interface_available:
                 proposals = []
                 for target_position in editable_target_positions:
@@ -364,12 +397,15 @@ def decode_masked_diffusion(
                     if candidate_filter_available:
                         candidate_filter_calls += 1
             else:
+                forward_start = perf_counter()
                 logits = _extract_logits(
                     model.forward([list(x)], attention_mask=[list(attention_mask)]),
                     sequence_length=len(x),
                     vocab_size=config.vocab_size,
                 )
+                model_forward_time_sec += perf_counter() - forward_start
                 forward_calls += 1
+                proposal_start = perf_counter()
                 proposals = [
                     _proposal_for_position(
                         entry=plan.entries[target_position],
@@ -388,6 +424,12 @@ def decode_masked_diffusion(
                 ]
                 if candidate_filter_available:
                     candidate_filter_calls += len(editable_target_positions)
+            candidate_construction_time_sec += perf_counter() - proposal_start
+            step_candidate_counts = [proposal.candidate_count for proposal in proposals]
+            if step_candidate_counts:
+                candidate_count_sum += sum(step_candidate_counts)
+                candidate_count_seen += len(step_candidate_counts)
+                candidate_count_max = max(candidate_count_max, max(step_candidate_counts))
             proposals.sort(
                 key=lambda proposal: (
                     -proposal.top1_probability,
@@ -420,6 +462,7 @@ def decode_masked_diffusion(
             hook_result = _PostCommitHookApplication()
             if post_commit_hook_available:
                 post_commit_hook_calls += 1
+                hook_start = perf_counter()
                 hook_result = _apply_post_commit_hook(
                     post_commit_hook=post_commit_hook,
                     x=x,
@@ -435,6 +478,7 @@ def decode_masked_diffusion(
                         for proposal in committed
                     ),
                 )
+                post_commit_hook_time_sec += perf_counter() - hook_start
                 post_commit_fixed_positions_per_step.append(len(hook_result.fixed_tokens))
                 post_commit_rollback_positions_per_step.append(len(hook_result.rollback_positions))
                 for target_position in hook_result.rollback_positions:
@@ -462,6 +506,54 @@ def decode_masked_diffusion(
             restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
             still_masked_count = len(
                 _still_masked_target_positions(x, plan, prompt_length, config.mask_token_id)
+            )
+            step_filter_diagnostics = _candidate_filter_diagnostics(candidate_filter)
+            step_filter_rejections_after = int(
+                step_filter_diagnostics.get("parity_candidate_rejections", 0) or 0
+            )
+            step_hook_diagnostics = _post_commit_hook_last_step_diagnostics(post_commit_hook)
+            step_diagnostics.append(
+                {
+                    "step": step,
+                    "remaining_masks_before": remaining_masks_before,
+                    "remaining_masks_after": still_masked_count,
+                    "model_committed_count": len(committed),
+                    "parity_peeled_count": len(hook_result.fixed_tokens),
+                    "rollback_count": len(hook_result.rollback_positions),
+                    "candidate_filter_calls": candidate_filter_calls - step_filter_calls_before,
+                    "candidate_filter_rejections": (
+                        step_filter_rejections_after - step_filter_rejections_before
+                    ),
+                    "mean_candidate_count": (
+                        sum(step_candidate_counts) / len(step_candidate_counts)
+                        if step_candidate_counts
+                        else 0.0
+                    ),
+                    "max_candidate_count": max(step_candidate_counts) if step_candidate_counts else 0,
+                    "hash_guided_editable_count": hash_guided_editable_count,
+                    "unguided_editable_count": unguided_editable_count,
+                    "active_parity_equation_count": step_hook_diagnostics.get(
+                        "active_parity_equation_count",
+                        step_filter_diagnostics.get("parity_candidate_filter_equation_count", 0),
+                    ),
+                    "linear_solver_components_seen": step_hook_diagnostics.get(
+                        "linear_solver_components_seen",
+                        0,
+                    ),
+                    "linear_solver_components_solved": step_hook_diagnostics.get(
+                        "linear_solver_components_solved",
+                        0,
+                    ),
+                    "linear_solver_rank_deficient_count": step_hook_diagnostics.get(
+                        "linear_solver_rank_deficient_count",
+                        0,
+                    ),
+                    "linear_solver_too_large_count": step_hook_diagnostics.get(
+                        "linear_solver_too_large_count",
+                        0,
+                    ),
+                    "final_masks": still_masked_count,
+                }
             )
             step_summaries.append(
                 step_summary(
@@ -503,6 +595,20 @@ def decode_masked_diffusion(
             else:
                 hash_relaxed_steps.append(step)
 
+            remaining_masks_before = len(editable_target_positions)
+            step_filter_calls_before = candidate_filter_calls
+            step_filter_rejections_before = int(
+                _candidate_filter_diagnostics(candidate_filter).get(
+                    "parity_candidate_rejections",
+                    0,
+                )
+                or 0
+            )
+            hash_guided_editable_count, unguided_editable_count = _editable_state_counts(
+                plan=plan,
+                target_positions=editable_target_positions,
+            )
+            proposal_start = perf_counter()
             if proposal_interface_available:
                 proposals = []
                 for target_position in editable_target_positions:
@@ -525,12 +631,15 @@ def decode_masked_diffusion(
                     if candidate_filter_available:
                         candidate_filter_calls += 1
             else:
+                forward_start = perf_counter()
                 logits = _extract_logits(
                     model.forward([list(x)], attention_mask=[list(attention_mask)]),
                     sequence_length=len(x),
                     vocab_size=config.vocab_size,
                 )
+                model_forward_time_sec += perf_counter() - forward_start
                 forward_calls += 1
+                proposal_start = perf_counter()
                 proposals = [
                     _proposal_for_position(
                         entry=plan.entries[target_position],
@@ -549,6 +658,12 @@ def decode_masked_diffusion(
                 ]
                 if candidate_filter_available:
                     candidate_filter_calls += len(editable_target_positions)
+            candidate_construction_time_sec += perf_counter() - proposal_start
+            step_candidate_counts = [proposal.candidate_count for proposal in proposals]
+            if step_candidate_counts:
+                candidate_count_sum += sum(step_candidate_counts)
+                candidate_count_seen += len(step_candidate_counts)
+                candidate_count_max = max(candidate_count_max, max(step_candidate_counts))
 
             committed_stats = []
             step_fallback_positions = []
@@ -577,6 +692,41 @@ def decode_masked_diffusion(
             restored_positions.update(position - prompt_length for position in step_restored if position >= prompt_length)
             still_masked_count = len(
                 _still_masked_target_positions(x, plan, prompt_length, config.mask_token_id)
+            )
+            step_filter_diagnostics = _candidate_filter_diagnostics(candidate_filter)
+            step_filter_rejections_after = int(
+                step_filter_diagnostics.get("parity_candidate_rejections", 0) or 0
+            )
+            step_diagnostics.append(
+                {
+                    "step": step,
+                    "remaining_masks_before": remaining_masks_before,
+                    "remaining_masks_after": still_masked_count,
+                    "model_committed_count": len(proposals),
+                    "parity_peeled_count": 0,
+                    "rollback_count": 0,
+                    "candidate_filter_calls": candidate_filter_calls - step_filter_calls_before,
+                    "candidate_filter_rejections": (
+                        step_filter_rejections_after - step_filter_rejections_before
+                    ),
+                    "mean_candidate_count": (
+                        sum(step_candidate_counts) / len(step_candidate_counts)
+                        if step_candidate_counts
+                        else 0.0
+                    ),
+                    "max_candidate_count": max(step_candidate_counts) if step_candidate_counts else 0,
+                    "hash_guided_editable_count": hash_guided_editable_count,
+                    "unguided_editable_count": unguided_editable_count,
+                    "active_parity_equation_count": step_filter_diagnostics.get(
+                        "parity_candidate_filter_equation_count",
+                        0,
+                    ),
+                    "linear_solver_components_seen": 0,
+                    "linear_solver_components_solved": 0,
+                    "linear_solver_rank_deficient_count": 0,
+                    "linear_solver_too_large_count": 0,
+                    "final_masks": still_masked_count,
+                }
             )
             step_summaries.append(
                 step_summary(
@@ -642,6 +792,7 @@ def decode_masked_diffusion(
     ordered_stats = tuple(stats_by_position[position] for position in range(plan.total_tokens))
     candidate_filter_diagnostics = _candidate_filter_diagnostics(candidate_filter)
     post_commit_hook_diagnostics = _post_commit_hook_diagnostics(post_commit_hook)
+    total_decode_time_sec = perf_counter() - start_time
     candidate_filter_rejections = int(
         candidate_filter_diagnostics.get(
             "parity_candidate_rejections",
@@ -652,7 +803,7 @@ def decode_masked_diffusion(
     return DecodingResult(
         reconstructed_text=_decode_tokens(model, reconstructed_tokens),
         reconstructed_tokens=reconstructed_tokens,
-        decode_latency_sec=perf_counter() - start_time,
+        decode_latency_sec=total_decode_time_sec,
         steps=len(step_summaries),
         fixed_token_count=masks.fixed_count,
         editable_token_count=masks.editable_count,
@@ -674,6 +825,29 @@ def decode_masked_diffusion(
             "candidate_filter_calls": candidate_filter_calls,
             "candidate_filter_rejections": candidate_filter_rejections,
             "candidate_filter_diagnostics": candidate_filter_diagnostics,
+            "mean_candidate_count": (
+                candidate_count_sum / candidate_count_seen if candidate_count_seen else 0.0
+            ),
+            "max_candidate_count": candidate_count_max,
+            "model_forward_time_sec": model_forward_time_sec,
+            "candidate_construction_time_sec": candidate_construction_time_sec,
+            "parity_candidate_filter_time_sec": float(
+                candidate_filter_diagnostics.get("parity_filter_time_sec", 0.0) or 0.0
+            ),
+            "xor_peel_time_sec": float(
+                post_commit_hook_diagnostics.get("iterative_xor_peel_time_sec", 0.0)
+                or 0.0
+            ),
+            "linear_solver_time_sec": float(
+                post_commit_hook_diagnostics.get("iterative_linear_solver_time_sec", 0.0)
+                or 0.0
+            ),
+            "post_commit_hook_time_sec": post_commit_hook_time_sec,
+            "rollback_time_sec": float(
+                post_commit_hook_diagnostics.get("rollback_time_sec", 0.0) or 0.0
+            ),
+            "total_decode_time_sec": total_decode_time_sec,
+            "step_diagnostics": tuple(step_diagnostics),
             "post_commit_hook_available": post_commit_hook_available,
             "post_commit_hook_used": post_commit_hook_calls > 0,
             "post_commit_hook_calls": post_commit_hook_calls,
@@ -740,6 +914,22 @@ def _still_masked_target_positions(
         for entry in plan.entries
         if not entry.fixed and x[prompt_length + entry.position] == mask_token_id
     ]
+
+
+def _editable_state_counts(
+    *,
+    plan: ReconstructionPlan,
+    target_positions: Sequence[int],
+) -> tuple[int, int]:
+    hash_guided = 0
+    unguided = 0
+    for target_position in target_positions:
+        entry = plan.entries[int(target_position)]
+        if entry.state == STATE_MISSING:
+            hash_guided += 1
+        else:
+            unguided += 1
+    return hash_guided, unguided
 
 
 def _extract_logits(
@@ -1019,6 +1209,15 @@ def _post_commit_hook_diagnostics(post_commit_hook: object | None) -> dict[str, 
             raise TypeError("post_commit_hook.diagnostics() must return a dict")
         return dict(value)
     value = getattr(post_commit_hook, "diagnostics", None)
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _post_commit_hook_last_step_diagnostics(post_commit_hook: object | None) -> dict[str, Any]:
+    if post_commit_hook is None:
+        return {}
+    value = getattr(post_commit_hook, "last_step_diagnostics", None)
     if isinstance(value, dict):
         return dict(value)
     return {}

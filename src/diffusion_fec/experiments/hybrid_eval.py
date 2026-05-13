@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
 
 from diffusion_fec.baselines.overhead import (
@@ -249,6 +250,7 @@ class IterativeXorPeelHook:
         self.linear_solver_diagnostics = _empty_linear_solver_diagnostics(
             enabled=self.enable_linear_solve
         )
+        self.last_step_diagnostics: dict[str, Any] = {}
 
     def __call__(
         self,
@@ -268,6 +270,7 @@ class IterativeXorPeelHook:
             prompt_length=prompt_length,
             mask_token_id=self.mask_token_id,
         )
+        solve_start = perf_counter()
         peel = solve_xor_equations(
             equations=self.equations,
             known_tokens=known_tokens,
@@ -278,6 +281,7 @@ class IterativeXorPeelHook:
             enable_linear_solve=self.enable_linear_solve,
             max_component_unknowns=self.max_component_unknowns,
         )
+        solve_time_sec = perf_counter() - solve_start
         self._record_conflicts(peel)
         self._accumulate_linear_diagnostics(peel.linear_solver_diagnostics)
         newly_fixed = {
@@ -288,6 +292,14 @@ class IterativeXorPeelHook:
         }
         self.recovered_tokens.update(newly_fixed)
         self.per_step_recovered_count.append(len(newly_fixed))
+        self.last_step_diagnostics = _hook_step_diagnostics(
+            equations=self.equations,
+            peel=peel,
+            newly_fixed_count=len(newly_fixed),
+            solve_time_sec=solve_time_sec,
+            rollback_count=0,
+            rollback_time_sec=0.0,
+        )
         return {"fixed_tokens": newly_fixed}
 
     def diagnostics(self) -> dict[str, Any]:
@@ -354,6 +366,8 @@ class IterativeXorPeelHook:
         for key in self.linear_solver_diagnostics:
             if key == "linear_solver_enabled":
                 self.linear_solver_diagnostics[key] = self.enable_linear_solve
+            elif key.endswith("_time_sec"):
+                self.linear_solver_diagnostics[key] += float(diagnostics.get(key, 0.0))
             else:
                 self.linear_solver_diagnostics[key] += int(diagnostics.get(key, 0))
 
@@ -419,6 +433,8 @@ class IterativeRollbackXorHook:
         self.decode_extra_steps_used = 0
         self.decode_remaining_masks_after_budget = 0
         self.decode_no_progress_stop = False
+        self.rollback_time_sec = 0.0
+        self.last_step_diagnostics: dict[str, Any] = {}
 
     def __call__(
         self,
@@ -449,6 +465,7 @@ class IterativeRollbackXorHook:
             prompt_length=prompt_length,
             mask_token_id=self.mask_token_id,
         )
+        solve_start = perf_counter()
         peel = solve_xor_equations(
             equations=self.equations,
             known_tokens=known_tokens,
@@ -459,6 +476,7 @@ class IterativeRollbackXorHook:
             enable_linear_solve=self.enable_linear_solve,
             max_component_unknowns=self.max_component_unknowns,
         )
+        solve_time_sec = perf_counter() - solve_start
         self._record_conflicts(peel)
         self._accumulate_linear_diagnostics(peel.linear_solver_diagnostics)
 
@@ -466,6 +484,7 @@ class IterativeRollbackXorHook:
         conflict_candidates.extend(
             self._audit_conflicts(token_by_position=known_tokens)
         )
+        rollback_start = perf_counter()
         rollback_positions, position_bans = self._rollback_requests(
             conflicts=conflict_candidates,
             input_ids=input_ids,
@@ -477,6 +496,8 @@ class IterativeRollbackXorHook:
         for position in rollback_positions:
             self.provenance.pop(position, None)
             self.recovered_tokens.pop(position, None)
+        step_rollback_time = perf_counter() - rollback_start
+        self.rollback_time_sec += step_rollback_time
         newly_fixed = self._accepted_new_fixed_tokens(
             peel=peel,
             input_ids=input_ids,
@@ -485,6 +506,14 @@ class IterativeRollbackXorHook:
         )
         self.recovered_tokens.update(newly_fixed)
         self.per_step_recovered_count.append(len(newly_fixed))
+        self.last_step_diagnostics = _hook_step_diagnostics(
+            equations=self.equations,
+            peel=peel,
+            newly_fixed_count=len(newly_fixed),
+            solve_time_sec=solve_time_sec,
+            rollback_count=len(rollback_positions),
+            rollback_time_sec=step_rollback_time,
+        )
         return {
             "fixed_tokens": newly_fixed,
             "rollback_positions": rollback_positions,
@@ -533,6 +562,7 @@ class IterativeRollbackXorHook:
             "rollback_remaining_masks_after_budget": self.decode_remaining_masks_after_budget,
             "rollback_provenance_invalidated_count": self.provenance_invalidated_count,
             "rollback_no_progress_stop": self.decode_no_progress_stop,
+            "rollback_time_sec": self.rollback_time_sec,
             "rollback_events": tuple(self.rollback_events),
         }
 
@@ -758,6 +788,8 @@ class IterativeRollbackXorHook:
         for key in self.linear_solver_diagnostics:
             if key == "linear_solver_enabled":
                 self.linear_solver_diagnostics[key] = self.enable_linear_solve
+            elif key.endswith("_time_sec"):
+                self.linear_solver_diagnostics[key] += float(diagnostics.get(key, 0.0))
             else:
                 self.linear_solver_diagnostics[key] += int(diagnostics.get(key, 0))
 
@@ -1593,11 +1625,30 @@ def _result_row(
         "editable_update_mode": diagnostics.get("editable_update_mode"),
         "hash_constraint_schedule": diagnostics.get("hash_constraint_schedule"),
         "decode_latency_sec": case.decoding_result.decode_latency_sec,
+        "total_decode_time_sec": diagnostics.get(
+            "total_decode_time_sec",
+            case.decoding_result.decode_latency_sec,
+        ),
+        "model_forward_time_sec": diagnostics.get("model_forward_time_sec", 0.0),
+        "candidate_construction_time_sec": diagnostics.get(
+            "candidate_construction_time_sec",
+            0.0,
+        ),
+        "parity_candidate_filter_time_sec": diagnostics.get(
+            "parity_candidate_filter_time_sec",
+            0.0,
+        ),
+        "xor_peel_time_sec": diagnostics.get("xor_peel_time_sec", 0.0),
+        "linear_solver_time_sec": diagnostics.get("linear_solver_time_sec", 0.0),
+        "post_commit_hook_time_sec": diagnostics.get("post_commit_hook_time_sec", 0.0),
+        "rollback_time_sec": diagnostics.get("rollback_time_sec", 0.0),
         "decoder_steps": case.decoding_result.steps,
         "model_forward_calls": diagnostics.get("model_forward_calls"),
         "model_proposal_calls": diagnostics.get("model_proposal_calls"),
         "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode"),
         "proposal_interface_used": diagnostics.get("proposal_interface_used"),
+        "mean_candidate_count": diagnostics.get("mean_candidate_count", 0.0),
+        "max_candidate_count": diagnostics.get("max_candidate_count", 0),
         "parity_equation_count": diagnostics.get("parity_equation_count", 0),
         "parity_received_equation_count": diagnostics.get("parity_received_equation_count", 0),
         "parity_peel_iterations": case.initial_peel.peel_iteration_count,
@@ -1688,6 +1739,38 @@ def _result_row(
         ),
         "parity_filter_fallback_count": case.parity_filter_diagnostics.get(
             "parity_filter_fallback_count",
+            0,
+        ),
+        "parity_filter_required_token_checks": case.parity_filter_diagnostics.get(
+            "parity_filter_required_token_checks",
+            0,
+        ),
+        "parity_filter_full_scan_count": case.parity_filter_diagnostics.get(
+            "parity_filter_full_scan_count",
+            0,
+        ),
+        "parity_filter_candidate_membership_checks": case.parity_filter_diagnostics.get(
+            "parity_filter_candidate_membership_checks",
+            0,
+        ),
+        "parity_filter_time_sec": case.parity_filter_diagnostics.get(
+            "parity_filter_time_sec",
+            0.0,
+        ),
+        "parity_filter_mean_input_candidate_count": case.parity_filter_diagnostics.get(
+            "parity_filter_mean_input_candidate_count",
+            0.0,
+        ),
+        "parity_filter_max_input_candidate_count": case.parity_filter_diagnostics.get(
+            "parity_filter_max_input_candidate_count",
+            0,
+        ),
+        "parity_filter_mean_output_candidate_count": case.parity_filter_diagnostics.get(
+            "parity_filter_mean_output_candidate_count",
+            0.0,
+        ),
+        "parity_filter_max_output_candidate_count": case.parity_filter_diagnostics.get(
+            "parity_filter_max_output_candidate_count",
             0,
         ),
         "parity_equations_satisfied": case.final_audit.satisfied_count,
@@ -2050,6 +2133,16 @@ def _decoding_result_with_hybrid_diagnostics(
     parity_received_equation_count: int,
 ) -> DecodingResult:
     diagnostics = dict(decoding_result.diagnostics)
+    initial_xor_peel_time = float(linear_solver_diagnostics.get("xor_peel_time_sec", 0.0) or 0.0)
+    initial_linear_solver_time = float(
+        linear_solver_diagnostics.get("linear_solver_time_sec", 0.0) or 0.0
+    )
+    iterative_xor_peel_time = float(
+        iterative_peel_diagnostics.get("iterative_xor_peel_time_sec", 0.0) or 0.0
+    )
+    iterative_linear_solver_time = float(
+        iterative_peel_diagnostics.get("iterative_linear_solver_time_sec", 0.0) or 0.0
+    )
     diagnostics.update(
         {
             "hybrid_mode": hybrid_mode,
@@ -2065,6 +2158,8 @@ def _decoding_result_with_hybrid_diagnostics(
             **_sparse_result_fields(sparse_diagnostics),
             **parity_filter_diagnostics,
             **iterative_peel_diagnostics,
+            "xor_peel_time_sec": initial_xor_peel_time + iterative_xor_peel_time,
+            "linear_solver_time_sec": initial_linear_solver_time + iterative_linear_solver_time,
         }
     )
     return DecodingResult(
@@ -2082,6 +2177,7 @@ def _decoding_result_with_hybrid_diagnostics(
 
 
 def _normalize_case_latency(case: HybridRecoveryCase) -> HybridRecoveryCase:
+    diagnostics = _zero_timing_diagnostics(case.decoding_result.diagnostics)
     decoding_result = DecodingResult(
         reconstructed_text=case.decoding_result.reconstructed_text,
         reconstructed_tokens=case.decoding_result.reconstructed_tokens,
@@ -2092,9 +2188,45 @@ def _normalize_case_latency(case: HybridRecoveryCase) -> HybridRecoveryCase:
         hash_guided_token_count=case.decoding_result.hash_guided_token_count,
         confidence_stats=case.decoding_result.confidence_stats,
         step_summaries=case.decoding_result.step_summaries,
-        diagnostics=case.decoding_result.diagnostics,
+        diagnostics=diagnostics,
     )
-    return replace(case, decoding_result=decoding_result)
+    return replace(
+        case,
+        decoding_result=decoding_result,
+        parity_filter_diagnostics=_zero_timing_diagnostics(case.parity_filter_diagnostics),
+        initial_peel=_normalize_peel_timing(case.initial_peel),
+    )
+
+
+def _normalize_peel_timing(result: XorPeelResult) -> XorPeelResult:
+    return replace(
+        result,
+        linear_solver_diagnostics=_zero_timing_diagnostics(result.linear_solver_diagnostics),
+    )
+
+
+def _zero_timing_diagnostics(data: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(data)
+    for key in list(normalized):
+        if key.endswith("_time_sec") or key in {"decode_latency_sec", "total_decode_time_sec"}:
+            normalized[key] = 0.0
+    candidate_filter_diagnostics = normalized.get("candidate_filter_diagnostics")
+    if isinstance(candidate_filter_diagnostics, Mapping):
+        normalized["candidate_filter_diagnostics"] = _zero_timing_diagnostics(
+            candidate_filter_diagnostics
+        )
+    post_commit_hook_diagnostics = normalized.get("post_commit_hook_diagnostics")
+    if isinstance(post_commit_hook_diagnostics, Mapping):
+        normalized["post_commit_hook_diagnostics"] = _zero_timing_diagnostics(
+            post_commit_hook_diagnostics
+        )
+    step_diagnostics = normalized.get("step_diagnostics")
+    if isinstance(step_diagnostics, Sequence) and not isinstance(step_diagnostics, (str, bytes)):
+        normalized["step_diagnostics"] = tuple(
+            _zero_timing_diagnostics(item) if isinstance(item, Mapping) else item
+            for item in step_diagnostics
+        )
+    return normalized
 
 
 def _empty_filter_diagnostics() -> dict[str, Any]:
@@ -2103,6 +2235,14 @@ def _empty_filter_diagnostics() -> dict[str, Any]:
         "parity_candidate_rejections": 0,
         "parity_filter_fallback_count": 0,
         "parity_filter_fallback_enabled": False,
+        "parity_filter_required_token_checks": 0,
+        "parity_filter_full_scan_count": 0,
+        "parity_filter_candidate_membership_checks": 0,
+        "parity_filter_time_sec": 0.0,
+        "parity_filter_mean_input_candidate_count": 0.0,
+        "parity_filter_max_input_candidate_count": 0,
+        "parity_filter_mean_output_candidate_count": 0.0,
+        "parity_filter_max_output_candidate_count": 0,
     }
 
 
@@ -2142,6 +2282,18 @@ def _iterative_peel_style_diagnostics(
         "iterative_linear_solver_too_large_count": linear_solver_diagnostics[
             "linear_solver_too_large_count"
         ],
+        "iterative_xor_peel_time_sec": linear_solver_diagnostics.get(
+            "xor_peel_time_sec",
+            0.0,
+        ),
+        "iterative_linear_solver_time_sec": linear_solver_diagnostics.get(
+            "linear_solver_time_sec",
+            0.0,
+        ),
+        "iterative_total_xor_solve_time_sec": linear_solver_diagnostics.get(
+            "total_xor_solve_time_sec",
+            0.0,
+        ),
         "iterative_peel_hash_conflict_count": sum(
             conflict.reason in {
                 "parity_hash_conflict",
@@ -2165,6 +2317,35 @@ def _iterative_peel_style_diagnostics(
     }
 
 
+def _hook_step_diagnostics(
+    *,
+    equations: Sequence[Any],
+    peel: XorPeelResult,
+    newly_fixed_count: int,
+    solve_time_sec: float,
+    rollback_count: int,
+    rollback_time_sec: float,
+) -> dict[str, Any]:
+    linear = peel.linear_solver_diagnostics
+    return {
+        "active_parity_equation_count": len(equations),
+        "parity_peeled_count": newly_fixed_count,
+        "linear_solver_components_seen": linear.get("linear_solver_components_seen", 0),
+        "linear_solver_components_solved": linear.get("linear_solver_components_solved", 0),
+        "linear_solver_rank_deficient_count": linear.get(
+            "linear_solver_rank_deficient_count",
+            0,
+        ),
+        "linear_solver_too_large_count": linear.get("linear_solver_too_large_count", 0),
+        "linear_solver_tokens_recovered": linear.get("linear_solver_tokens_recovered", 0),
+        "xor_peel_time_sec": linear.get("xor_peel_time_sec", 0.0),
+        "linear_solver_time_sec": linear.get("linear_solver_time_sec", 0.0),
+        "total_xor_solve_time_sec": solve_time_sec,
+        "rollback_count": rollback_count,
+        "rollback_time_sec": rollback_time_sec,
+    }
+
+
 def _empty_linear_solver_diagnostics(*, enabled: bool = False) -> dict[str, Any]:
     return {
         "linear_solver_enabled": enabled,
@@ -2174,6 +2355,9 @@ def _empty_linear_solver_diagnostics(*, enabled: bool = False) -> dict[str, Any]
         "linear_solver_rank_deficient_count": 0,
         "linear_solver_validation_conflict_count": 0,
         "linear_solver_too_large_count": 0,
+        "xor_peel_time_sec": 0.0,
+        "linear_solver_time_sec": 0.0,
+        "total_xor_solve_time_sec": 0.0,
     }
 
 
@@ -2187,6 +2371,8 @@ def _linear_solver_result_fields(diagnostics: Mapping[str, Any]) -> dict[str, An
         "linear_solver_rank_deficient_count": data["linear_solver_rank_deficient_count"],
         "linear_solver_validation_conflict_count": data["linear_solver_validation_conflict_count"],
         "linear_solver_too_large_count": data["linear_solver_too_large_count"],
+        "initial_xor_peel_time_sec": data["xor_peel_time_sec"],
+        "initial_linear_solver_time_sec": data["linear_solver_time_sec"],
     }
 
 
@@ -2240,6 +2426,9 @@ def _empty_iterative_peel_diagnostics() -> dict[str, Any]:
         "iterative_linear_solver_rank_deficient_count": 0,
         "iterative_linear_solver_validation_conflict_count": 0,
         "iterative_linear_solver_too_large_count": 0,
+        "iterative_xor_peel_time_sec": 0.0,
+        "iterative_linear_solver_time_sec": 0.0,
+        "iterative_total_xor_solve_time_sec": 0.0,
         "iterative_peel_hash_conflict_count": 0,
         "iterative_peel_special_token_conflict_count": 0,
         "iterative_peel_vocab_conflict_count": 0,
@@ -2258,6 +2447,7 @@ def _empty_iterative_peel_diagnostics() -> dict[str, Any]:
         "rollback_remaining_masks_after_budget": 0,
         "rollback_provenance_invalidated_count": 0,
         "rollback_no_progress_stop": False,
+        "rollback_time_sec": 0.0,
         "rollback_events": (),
     }
 

@@ -143,6 +143,8 @@ def test_parity_candidate_filter_rejects_incompatible_candidates() -> None:
 
     assert candidates == (5,)
     assert candidate_filter.diagnostics()["parity_candidate_rejections"] == 2
+    assert candidate_filter.diagnostics()["parity_filter_required_token_checks"] == 1
+    assert candidate_filter.diagnostics()["parity_filter_full_scan_count"] == 0
 
 
 def test_parity_candidate_filter_falls_back_when_empty() -> None:
@@ -165,6 +167,213 @@ def test_parity_candidate_filter_falls_back_when_empty() -> None:
 
     assert candidates == (4, 6)
     assert candidate_filter.diagnostics()["parity_filter_fallback_count"] == 1
+
+
+def test_parity_candidate_filter_matches_old_scan_for_determined_required_present() -> None:
+    equations = (XorTokenEquation("e0", 4, 0, 0, (0, 1), 2 ^ 5),)
+    entry = ReconstructionEntry(position=1, state="unguided", fixed=False)
+    candidates = tuple(range(1000))
+    candidate_filter = ParityCandidateFilter(
+        equations=equations,
+        known_tokens={0: 2},
+        mask_token_id=0,
+    )
+
+    result = candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(2, 0),
+        step=0,
+        full_position=1,
+    )
+
+    assert result == _old_parity_candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(2, 0),
+        equations=equations,
+        known_tokens={0: 2},
+        mask_token_id=0,
+        fallback_on_empty=True,
+    )
+    assert result == (5,)
+    assert candidate_filter.diagnostics()["parity_filter_full_scan_count"] == 0
+    assert candidate_filter.diagnostics()["parity_filter_candidate_membership_checks"] == 1
+
+
+def test_parity_candidate_filter_matches_old_scan_for_required_absent_fallback_on_and_off() -> None:
+    equations = (XorTokenEquation("e0", 4, 0, 0, (0, 1), 2 ^ 5),)
+    entry = ReconstructionEntry(position=1, state="unguided", fixed=False)
+    candidates = (4, 6, 8)
+
+    fallback_filter = ParityCandidateFilter(
+        equations=equations,
+        known_tokens={0: 2},
+        mask_token_id=0,
+        fallback_on_empty=True,
+    )
+    strict_filter = ParityCandidateFilter(
+        equations=equations,
+        known_tokens={0: 2},
+        mask_token_id=0,
+        fallback_on_empty=False,
+    )
+
+    fallback_result = fallback_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(2, 0),
+        step=0,
+        full_position=1,
+    )
+    strict_result = strict_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(2, 0),
+        step=0,
+        full_position=1,
+    )
+
+    assert fallback_result == _old_parity_candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(2, 0),
+        equations=equations,
+        known_tokens={0: 2},
+        mask_token_id=0,
+        fallback_on_empty=True,
+    )
+    assert strict_result == _old_parity_candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(2, 0),
+        equations=equations,
+        known_tokens={0: 2},
+        mask_token_id=0,
+        fallback_on_empty=False,
+    )
+
+
+def test_parity_candidate_filter_matches_old_scan_for_conflicting_determined_equations() -> None:
+    equations = (
+        XorTokenEquation("e0", 4, 0, 0, (0, 1), 2 ^ 5),
+        XorTokenEquation("e1", 5, 0, 0, (2, 1), 3 ^ 7),
+    )
+    entry = ReconstructionEntry(position=1, state="unguided", fixed=False)
+    candidates = (5, 7, 9)
+    candidate_filter = ParityCandidateFilter(
+        equations=equations,
+        known_tokens={0: 2, 2: 3},
+        mask_token_id=0,
+        fallback_on_empty=True,
+    )
+
+    result = candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(2, 0, 3),
+        step=0,
+        full_position=1,
+    )
+
+    assert result == _old_parity_candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(2, 0, 3),
+        equations=equations,
+        known_tokens={0: 2, 2: 3},
+        mask_token_id=0,
+        fallback_on_empty=True,
+    )
+    assert result == candidates
+
+
+def test_parity_candidate_filter_matches_old_scan_for_undetermined_and_mixed_equations() -> None:
+    equations = (
+        XorTokenEquation("undetermined", 4, 0, 0, (0, 1, 2), 2 ^ 5 ^ 9),
+        XorTokenEquation("determined", 5, 0, 0, (3, 1), 6 ^ 5),
+    )
+    entry = ReconstructionEntry(position=1, state="unguided", fixed=False)
+    candidates = (4, 5, 6)
+    candidate_filter = ParityCandidateFilter(
+        equations=equations,
+        known_tokens={3: 6},
+        mask_token_id=0,
+    )
+
+    result = candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(0, 0, 0, 6),
+        step=0,
+        full_position=1,
+    )
+
+    assert result == _old_parity_candidate_filter(
+        entry=entry,
+        candidate_token_ids=candidates,
+        input_ids=(0, 0, 0, 6),
+        equations=equations,
+        known_tokens={3: 6},
+        mask_token_id=0,
+        fallback_on_empty=True,
+    )
+    assert result == (5,)
+
+
+def _old_parity_candidate_filter(
+    *,
+    entry: ReconstructionEntry,
+    candidate_token_ids,
+    input_ids,
+    equations,
+    known_tokens,
+    mask_token_id: int,
+    fallback_on_empty: bool,
+):
+    kept = tuple(
+        token_id
+        for token_id in candidate_token_ids
+        if _old_candidate_satisfies(
+            position=entry.position,
+            candidate_token_id=token_id,
+            input_ids=input_ids,
+            equations=equations,
+            known_tokens=known_tokens,
+            mask_token_id=mask_token_id,
+        )
+    )
+    if kept or not fallback_on_empty:
+        return kept
+    return tuple(candidate_token_ids)
+
+
+def _old_candidate_satisfies(
+    *,
+    position,
+    candidate_token_id,
+    input_ids,
+    equations,
+    known_tokens,
+    mask_token_id,
+) -> bool:
+    for equation in equations:
+        accumulator = equation.parity_value
+        determined = True
+        for other_position in equation.positions:
+            if other_position == position:
+                continue
+            if other_position in known_tokens:
+                token_id = known_tokens[other_position]
+            elif other_position >= len(input_ids) or input_ids[other_position] == mask_token_id:
+                determined = False
+                break
+            else:
+                token_id = input_ids[other_position]
+            accumulator ^= token_id
+        if determined and candidate_token_id != accumulator:
+            return False
+    return True
 
 
 def test_xor_audit_counts_satisfied_and_violated_equations() -> None:
