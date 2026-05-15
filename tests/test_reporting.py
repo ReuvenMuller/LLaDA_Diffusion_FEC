@@ -98,6 +98,30 @@ def test_report_cli_entrypoint(tmp_path) -> None:
     assert (output_dir / "channel_lost_position_recovery_rate.svg").exists()
 
 
+def test_default_report_group_by_separates_burst_loss_rate(tmp_path) -> None:
+    first = tmp_path / "runs" / "burst_a"
+    second = tmp_path / "runs" / "burst_b"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    _write_single_result_csv(
+        first / "results.csv",
+        requested_burst_loss_rate="0.25",
+        resolved_burst_length="10",
+    )
+    _write_single_result_csv(
+        second / "results.csv",
+        requested_burst_loss_rate="0.5",
+        resolved_burst_length="20",
+    )
+
+    manifest = build_analysis_artifacts(run_root=tmp_path / "runs")
+
+    assert manifest["aggregate_row_count"] == 2
+    summary = (tmp_path / "runs" / "analysis" / "summary.md").read_text(encoding="utf-8")
+    assert "0.25" in summary
+    assert "0.5" in summary
+
+
 def _write_results_csv(path) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -109,6 +133,8 @@ def _write_results_csv(path) -> None:
                 "source_layout",
                 "wire_interleaving",
                 "loss_rate",
+                "requested_burst_loss_rate",
+                "resolved_burst_length",
                 "hash_bits",
                 "exact_match",
                 "known_position_preserved",
@@ -134,6 +160,8 @@ def _write_results_csv(path) -> None:
                 "source_layout": "contiguous",
                 "wire_interleaving": "none",
                 "loss_rate": "0.5",
+                "requested_burst_loss_rate": "",
+                "resolved_burst_length": "",
                 "hash_bits": "4",
                 "exact_match": "True",
                 "known_position_preserved": "True",
@@ -158,6 +186,8 @@ def _write_results_csv(path) -> None:
                 "source_layout": "contiguous",
                 "wire_interleaving": "none",
                 "loss_rate": "0.5",
+                "requested_burst_loss_rate": "",
+                "resolved_burst_length": "",
                 "hash_bits": "4",
                 "exact_match": "False",
                 "known_position_preserved": "True",
@@ -222,3 +252,46 @@ def _write_events_jsonl(path) -> None:
         "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
         encoding="utf-8",
     )
+
+
+def _write_single_result_csv(
+    path,
+    *,
+    requested_burst_loss_rate: str,
+    resolved_burst_length: str,
+) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "strategy",
+                "protection_mode",
+                "channel_mode",
+                "source_layout",
+                "wire_interleaving",
+                "loss_rate",
+                "requested_burst_loss_rate",
+                "resolved_burst_length",
+                "hash_bits",
+                "exact_match",
+                "known_position_preserved",
+                "token_edit_distance",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "strategy": "A",
+                "protection_mode": "p",
+                "channel_mode": "burst",
+                "source_layout": "contiguous",
+                "wire_interleaving": "none",
+                "loss_rate": "0.5",
+                "requested_burst_loss_rate": requested_burst_loss_rate,
+                "resolved_burst_length": resolved_burst_length,
+                "hash_bits": "4",
+                "exact_match": "True",
+                "known_position_preserved": "True",
+                "token_edit_distance": "0",
+            }
+        )

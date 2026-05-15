@@ -160,3 +160,31 @@ def test_load_and_write_aggregate_csv(tmp_path) -> None:
 
     assert output_path.exists()
     assert "exact_match_rate" in output_path.read_text(encoding="utf-8")
+
+
+def test_default_group_by_separates_burst_settings() -> None:
+    rows = [
+        {
+            "strategy": "A",
+            "protection_mode": "p",
+            "channel_mode": "burst",
+            "requested_burst_loss_rate": "0.25",
+            "resolved_burst_length": "10",
+            "exact_match": "True",
+            "token_edit_distance": "0",
+        },
+        {
+            "strategy": "A",
+            "protection_mode": "p",
+            "channel_mode": "burst",
+            "requested_burst_loss_rate": "0.5",
+            "resolved_burst_length": "20",
+            "exact_match": "False",
+            "token_edit_distance": "2",
+        },
+    ]
+
+    aggregate = aggregate_result_rows(rows)
+
+    assert len(aggregate) == 2
+    assert {row["requested_burst_loss_rate"] for row in aggregate} == {"0.25", "0.5"}
