@@ -361,6 +361,19 @@ commits are implicated, all are remasked without new bans. Received tokens are
 trusted roots and are never rolled back. Parity-solved tokens carry dependency
 provenance and are invalidated if a dependency is rolled back. Rollback runs
 report `rollback_*` diagnostics and may use bounded extra repair rounds.
+By default those extra rounds keep the original fixed-budget behavior for
+backward compatibility. For fair rollback validation, enable adaptive repair
+rounds with `--rollback-continue-until-stable on` and use a higher hard cap such
+as `--rollback-max-total-steps 24` or `32`. Adaptive rollback recomputes the
+commit schedule after remasking and continues until masks are refilled and no new
+rollback occurs, or until `rollback_stop_after_no_progress` or the hard
+`rollback_max_total_steps` cap stops it. Optional checks
+`--rollback-require-zero-masks on` and
+`--rollback-require-final-parity-clean on` make the stop condition explicit.
+Headline rows should inspect `rollback_stopped_reason`,
+`rollback_total_steps_used`, `rollback_final_zero_masks`,
+`rollback_final_parity_clean`, and
+`rollback_remaining_masks_after_budget`.
 
 Local fake/model-free smoke:
 
@@ -569,8 +582,10 @@ python -m diffusion_fec.experiments.runner `
   --sparse-xor-seed 7 `
   --sparse-xor-enable-linear-solve on `
   --rollback-extra-steps 4 `
-  --rollback-max-total-steps 16 `
+  --rollback-max-total-steps 24 `
   --rollback-max-per-position 3 `
+  --rollback-continue-until-stable on `
+  --rollback-require-zero-masks on `
   --channel burst `
   --burst-start-wire-id 0 `
   --burst-length 2
@@ -590,6 +605,9 @@ Use the frozen 10-sample LLaDA-tokenized artifact, loaded hash profiles,
 `source_layout=round_robin_chunks`, `source_chunk_size=1`,
 `wire_interleaving=matrix`, `wire_interleaving_span=4`, and both IID
 `loss_rate=0.5` and burst `burst_start_wire_id=0`, `--burst-loss-rate 0.5`.
+For adaptive rollback validation, add `--rollback-continue-until-stable on`,
+`--rollback-require-zero-masks on`, and a higher
+`--rollback-max-total-steps` cap such as `24` or `32`.
 Use
 `channel_lost_position_recovery_rate` as the headline recovery metric.
 
@@ -767,6 +785,10 @@ sparse hybrid still beats hash8 on this 10-sample validation set, but by a
 smaller margin. Iterative rollback still helps IID slightly, but it underperforms
 plain iterative peel on fair burst and leaves more masks, so rollback should stay
 experimental until its budget/rollback policy is improved.
+The next rollback validation should use adaptive rollback rather than the old
+fixed `rollback_extra_steps` budget, so rollback is judged on whether it can
+repair the positions it intentionally reopens rather than on an exhausted short
+repair allowance.
 
 The channel-loss reanalysis artifacts are written under:
 

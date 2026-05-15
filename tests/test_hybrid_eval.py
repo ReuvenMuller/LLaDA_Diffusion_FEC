@@ -785,6 +785,8 @@ def test_sparse_iterative_rollback_artifacts_include_rollback_diagnostics(tmp_pa
         xor_code=XOR_CODE_SPARSE_FOUNTAIN,
         sparse_xor_seed=2,
         rollback_extra_steps=2,
+        rollback_continue_until_stable=True,
+        rollback_require_zero_masks=True,
         source_layout=SourceLayoutConfig(mode=SOURCE_LAYOUT_ROUND_ROBIN_CHUNKS, chunk_size=1),
         wire_interleaving=WireInterleavingConfig(mode=WIRE_INTERLEAVING_MATRIX, span=4),
         channel_config=PacketLossChannelConfig(
@@ -800,9 +802,16 @@ def test_sparse_iterative_rollback_artifacts_include_rollback_diagnostics(tmp_pa
 
     assert manifest["config"]["hybrid_mode"] == HYBRID_MODE_ITERATIVE_ROLLBACK
     assert manifest["config"]["rollback_extra_steps"] == 2
+    assert manifest["config"]["rollback_continue_until_stable"] is True
+    assert manifest["config"]["rollback_require_zero_masks"] is True
     assert row["rollback_enabled"] == "True"
+    assert row["rollback_adaptive_enabled"] == "True"
     assert "rollback_event_count" in row
     assert "rollback_banned_tokens_by_position" in row
+    assert "rollback_total_steps_used" in row
+    assert "rollback_stopped_reason" in row
+    assert "rollback_final_zero_masks" in row
+    assert "rollback_final_parity_clean" in row
     assert "model_forward_time_sec" in row
     assert "candidate_construction_time_sec" in row
     assert "parity_candidate_filter_time_sec" in row
@@ -812,4 +821,5 @@ def test_sparse_iterative_rollback_artifacts_include_rollback_diagnostics(tmp_pa
     assert "mean_candidate_count" in row
     assert "parity_filter_required_token_checks" in row
     assert event["case"]["decoding_result"]["diagnostics"]["rollback_enabled"] is True
+    assert event["case"]["decoding_result"]["diagnostics"]["rollback_adaptive_enabled"] is True
     assert "step_diagnostics" in event["case"]["decoding_result"]["diagnostics"]

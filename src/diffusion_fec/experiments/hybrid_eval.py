@@ -403,6 +403,9 @@ class IterativeRollbackXorHook:
         rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
         rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
         rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
+        rollback_continue_until_stable: bool = False,
+        rollback_require_zero_masks: bool = False,
+        rollback_require_final_parity_clean: bool = False,
     ) -> None:
         self.equations = tuple(equations)
         self.hash_metadata = {int(position): int(value) for position, value in hash_metadata.items()}
@@ -416,6 +419,9 @@ class IterativeRollbackXorHook:
         self.rollback_max_total_steps = int(rollback_max_total_steps)
         self.rollback_max_per_position = int(rollback_max_per_position)
         self.rollback_stop_after_no_progress = int(rollback_stop_after_no_progress)
+        self.rollback_continue_until_stable = bool(rollback_continue_until_stable)
+        self.rollback_require_zero_masks = bool(rollback_require_zero_masks)
+        self.rollback_require_final_parity_clean = bool(rollback_require_final_parity_clean)
         if self.rollback_extra_steps < 0:
             raise ValueError("rollback_extra_steps must be non-negative")
         if self.rollback_max_total_steps <= 0:
@@ -442,6 +448,11 @@ class IterativeRollbackXorHook:
         self.max_per_position_hits = 0
         self.provenance_invalidated_count = 0
         self.decode_extra_steps_used = 0
+        self.decode_total_steps_used = 0
+        self.decode_base_steps = 0
+        self.decode_stopped_reason = ""
+        self.decode_final_zero_masks = False
+        self.decode_final_parity_clean: bool | None = None
         self.decode_remaining_masks_after_budget = 0
         self.decode_no_progress_stop = False
         self.rollback_time_sec = 0.0
@@ -537,10 +548,46 @@ class IterativeRollbackXorHook:
         extra_steps_used: int,
         remaining_masked_count: int,
         no_progress_stop: bool,
+        total_steps_used: int | None = None,
+        base_steps: int | None = None,
+        stopped_reason: str | None = None,
+        final_zero_masks: bool | None = None,
+        final_parity_clean: bool | None = None,
     ) -> None:
         self.decode_extra_steps_used = int(extra_steps_used)
+        self.decode_total_steps_used = int(
+            total_steps_used if total_steps_used is not None else extra_steps_used
+        )
+        self.decode_base_steps = int(base_steps if base_steps is not None else 0)
+        self.decode_stopped_reason = str(stopped_reason or "")
+        self.decode_final_zero_masks = (
+            bool(final_zero_masks) if final_zero_masks is not None else False
+        )
+        self.decode_final_parity_clean = final_parity_clean
         self.decode_remaining_masks_after_budget = int(remaining_masked_count)
         self.decode_no_progress_stop = bool(no_progress_stop)
+
+    def is_final_parity_clean(
+        self,
+        *,
+        input_ids,
+        plan: ReconstructionPlan,
+        prompt_length: int,
+        config: DiffusionDecodingConfig,
+    ) -> bool:
+        known_tokens = _known_tokens_from_decoder_state(
+            input_ids=input_ids,
+            plan=plan,
+            prompt_length=prompt_length,
+            mask_token_id=config.mask_token_id,
+        )
+        if len(known_tokens) < plan.total_tokens:
+            return False
+        audit = audit_xor_equations(
+            equations=self.equations,
+            token_by_position=known_tokens,
+        )
+        return audit.violated_count == 0
 
     def diagnostics(self) -> dict[str, Any]:
         conflicts = tuple(self.conflicts.values())
@@ -569,7 +616,17 @@ class IterativeRollbackXorHook:
                 for position, tokens in sorted(self.rollback_bans.items())
             },
             "rollback_max_per_position_hits": self.max_per_position_hits,
+            "rollback_adaptive_enabled": (
+                self.rollback_continue_until_stable
+                or self.rollback_require_zero_masks
+                or self.rollback_require_final_parity_clean
+            ),
+            "rollback_total_steps_used": self.decode_total_steps_used,
+            "rollback_base_steps": self.decode_base_steps,
             "rollback_extra_steps_used": self.decode_extra_steps_used,
+            "rollback_stopped_reason": self.decode_stopped_reason,
+            "rollback_final_zero_masks": self.decode_final_zero_masks,
+            "rollback_final_parity_clean": self.decode_final_parity_clean,
             "rollback_remaining_masks_after_budget": self.decode_remaining_masks_after_budget,
             "rollback_provenance_invalidated_count": self.provenance_invalidated_count,
             "rollback_no_progress_stop": self.decode_no_progress_stop,
@@ -833,6 +890,9 @@ def run_hybrid_xor_hash_micro_eval(
     rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
     rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
     rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
+    rollback_continue_until_stable: bool = False,
+    rollback_require_zero_masks: bool = False,
+    rollback_require_final_parity_clean: bool = False,
     source_layout: SourceLayoutConfig | None = None,
     wire_interleaving: WireInterleavingConfig | None = None,
     channel_config: PacketLossChannelConfig | None = None,
@@ -902,6 +962,9 @@ def run_hybrid_xor_hash_micro_eval(
         rollback_max_total_steps=rollback_max_total_steps,
         rollback_max_per_position=rollback_max_per_position,
         rollback_stop_after_no_progress=rollback_stop_after_no_progress,
+        rollback_continue_until_stable=rollback_continue_until_stable,
+        rollback_require_zero_masks=rollback_require_zero_masks,
+        rollback_require_final_parity_clean=rollback_require_final_parity_clean,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -944,6 +1007,9 @@ def run_real_llada_hybrid_xor_hash_micro_eval(
     rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
     rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
     rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
+    rollback_continue_until_stable: bool = False,
+    rollback_require_zero_masks: bool = False,
+    rollback_require_final_parity_clean: bool = False,
     local_files_only: bool = False,
     allow_cpu: bool = False,
     hash_profile_dir: str | Path | None = None,
@@ -1052,6 +1118,9 @@ def run_real_llada_hybrid_xor_hash_micro_eval(
         rollback_max_total_steps=rollback_max_total_steps,
         rollback_max_per_position=rollback_max_per_position,
         rollback_stop_after_no_progress=rollback_stop_after_no_progress,
+        rollback_continue_until_stable=rollback_continue_until_stable,
+        rollback_require_zero_masks=rollback_require_zero_masks,
+        rollback_require_final_parity_clean=rollback_require_final_parity_clean,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -1093,6 +1162,9 @@ def run_hybrid_recovery_case(
     rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
     rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
     rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
+    rollback_continue_until_stable: bool = False,
+    rollback_require_zero_masks: bool = False,
+    rollback_require_final_parity_clean: bool = False,
 ) -> HybridRecoveryCase:
     """Run one hybrid packet-loss and LLaDA recovery case."""
 
@@ -1204,6 +1276,9 @@ def run_hybrid_recovery_case(
             rollback_max_total_steps=rollback_max_total_steps,
             rollback_max_per_position=rollback_max_per_position,
             rollback_stop_after_no_progress=rollback_stop_after_no_progress,
+            rollback_continue_until_stable=rollback_continue_until_stable,
+            rollback_require_zero_masks=rollback_require_zero_masks,
+            rollback_require_final_parity_clean=rollback_require_final_parity_clean,
         )
     decoding_result = decode_masked_diffusion(
         model=model,
@@ -1364,6 +1439,9 @@ def _run_hybrid_cases(
     rollback_max_total_steps: int,
     rollback_max_per_position: int,
     rollback_stop_after_no_progress: int,
+    rollback_continue_until_stable: bool,
+    rollback_require_zero_masks: bool,
+    rollback_require_final_parity_clean: bool,
     source_layout: SourceLayoutConfig | None,
     wire_interleaving: WireInterleavingConfig | None,
     channel_config: PacketLossChannelConfig | None,
@@ -1404,6 +1482,9 @@ def _run_hybrid_cases(
         rollback_max_total_steps=rollback_max_total_steps,
         rollback_max_per_position=rollback_max_per_position,
         rollback_stop_after_no_progress=rollback_stop_after_no_progress,
+        rollback_continue_until_stable=rollback_continue_until_stable,
+        rollback_require_zero_masks=rollback_require_zero_masks,
+        rollback_require_final_parity_clean=rollback_require_final_parity_clean,
     )
     xor_config = XorParityConfig(
         data_packets_per_stripe=4,
@@ -1438,6 +1519,9 @@ def _run_hybrid_cases(
         rollback_extra_steps=rollback_extra_steps,
         rollback_max_total_steps=rollback_max_total_steps,
         rollback_max_per_position=rollback_max_per_position,
+        rollback_continue_until_stable=rollback_continue_until_stable,
+        rollback_require_zero_masks=rollback_require_zero_masks,
+        rollback_require_final_parity_clean=rollback_require_final_parity_clean,
     )
     manifest = _manifest(
         run_id=run_id,
@@ -1463,6 +1547,9 @@ def _run_hybrid_cases(
         rollback_max_total_steps=rollback_max_total_steps,
         rollback_max_per_position=rollback_max_per_position,
         rollback_stop_after_no_progress=rollback_stop_after_no_progress,
+        rollback_continue_until_stable=rollback_continue_until_stable,
+        rollback_require_zero_masks=rollback_require_zero_masks,
+        rollback_require_final_parity_clean=rollback_require_final_parity_clean,
         source_layout=source_layout,
         wire_interleaving=wire_interleaving,
         channel_config=channel_config,
@@ -1503,6 +1590,9 @@ def _run_hybrid_cases(
             rollback_max_total_steps=rollback_max_total_steps,
             rollback_max_per_position=rollback_max_per_position,
             rollback_stop_after_no_progress=rollback_stop_after_no_progress,
+            rollback_continue_until_stable=rollback_continue_until_stable,
+            rollback_require_zero_masks=rollback_require_zero_masks,
+            rollback_require_final_parity_clean=rollback_require_final_parity_clean,
             source_layout=source_layout,
             wire_interleaving=wire_interleaving,
             channel_config=case_channel_config,
@@ -1741,7 +1831,13 @@ def _result_row(
             separators=(",", ":"),
         ),
         "rollback_max_per_position_hits": diagnostics.get("rollback_max_per_position_hits", 0),
+        "rollback_adaptive_enabled": diagnostics.get("rollback_adaptive_enabled", False),
+        "rollback_total_steps_used": diagnostics.get("rollback_total_steps_used", 0),
+        "rollback_base_steps": diagnostics.get("rollback_base_steps", 0),
         "rollback_extra_steps_used": diagnostics.get("rollback_extra_steps_used", 0),
+        "rollback_stopped_reason": diagnostics.get("rollback_stopped_reason", ""),
+        "rollback_final_zero_masks": diagnostics.get("rollback_final_zero_masks", False),
+        "rollback_final_parity_clean": diagnostics.get("rollback_final_parity_clean", ""),
         "rollback_remaining_masks_after_budget": diagnostics.get(
             "rollback_remaining_masks_after_budget",
             0,
@@ -1823,6 +1919,9 @@ def _manifest(
     rollback_max_total_steps: int,
     rollback_max_per_position: int,
     rollback_stop_after_no_progress: int,
+    rollback_continue_until_stable: bool,
+    rollback_require_zero_masks: bool,
+    rollback_require_final_parity_clean: bool,
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
@@ -1864,6 +1963,9 @@ def _manifest(
             "rollback_max_total_steps": rollback_max_total_steps,
             "rollback_max_per_position": rollback_max_per_position,
             "rollback_stop_after_no_progress": rollback_stop_after_no_progress,
+            "rollback_continue_until_stable": rollback_continue_until_stable,
+            "rollback_require_zero_masks": rollback_require_zero_masks,
+            "rollback_require_final_parity_clean": rollback_require_final_parity_clean,
             "protection_mode": HYBRID_PROTECTION_MODE,
             "oracle_hash_metadata": False,
             "source_layout": source_layout.to_dict(),
@@ -1906,6 +2008,9 @@ def _run_id(
     rollback_extra_steps: int,
     rollback_max_total_steps: int,
     rollback_max_per_position: int,
+    rollback_continue_until_stable: bool,
+    rollback_require_zero_masks: bool,
+    rollback_require_final_parity_clean: bool,
 ) -> str:
     lengths = "-".join(str(length) for length in sample_lengths)
     source_chunk = source_layout.chunk_size if source_layout.chunk_size is not None else "default"
@@ -1917,7 +2022,9 @@ def _run_id(
         f"wire-{wire_interleaving.mode}-span{wire_interleaving.span}|"
         f"channel-{channel_config.mode}|update-{editable_update_mode}|"
         f"hash-schedule-{hash_constraint_schedule}|sparse-seed{sparse_xor_seed}|"
-        f"rollback-extra{rollback_extra_steps}-max{rollback_max_total_steps}-perpos{rollback_max_per_position}"
+        f"rollback-extra{rollback_extra_steps}-max{rollback_max_total_steps}-perpos{rollback_max_per_position}|"
+        f"rollback-adaptive{int(rollback_continue_until_stable)}-zero{int(rollback_require_zero_masks)}-"
+        f"parityclean{int(rollback_require_final_parity_clean)}"
     )
 
 
@@ -1965,6 +2072,9 @@ def _validate_common_config(
     rollback_max_total_steps: int = DEFAULT_ROLLBACK_MAX_TOTAL_STEPS,
     rollback_max_per_position: int = DEFAULT_ROLLBACK_MAX_PER_POSITION,
     rollback_stop_after_no_progress: int = DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
+    rollback_continue_until_stable: bool = False,
+    rollback_require_zero_masks: bool = False,
+    rollback_require_final_parity_clean: bool = False,
 ) -> None:
     if not sample_lengths:
         raise ValueError("sample_lengths must be non-empty")
@@ -1995,6 +2105,10 @@ def _validate_common_config(
         raise ValueError("rollback_max_per_position must be positive")
     if rollback_stop_after_no_progress < 0:
         raise ValueError("rollback_stop_after_no_progress must be non-negative")
+    if rollback_require_zero_masks and not rollback_continue_until_stable:
+        raise ValueError("rollback_require_zero_masks requires rollback_continue_until_stable")
+    if rollback_require_final_parity_clean and not rollback_continue_until_stable:
+        raise ValueError("rollback_require_final_parity_clean requires rollback_continue_until_stable")
 
 
 def _validate_hybrid_mode(hybrid_mode: str) -> None:
@@ -2180,6 +2294,8 @@ def _decoding_result_with_hybrid_diagnostics(
             "linear_solver_time_sec": initial_linear_solver_time + iterative_linear_solver_time,
         }
     )
+    if diagnostics.get("rollback_enabled"):
+        diagnostics["rollback_final_parity_clean"] = final_audit.violated_count == 0
     return DecodingResult(
         reconstructed_text=decoding_result.reconstructed_text,
         reconstructed_tokens=decoding_result.reconstructed_tokens,
@@ -2461,7 +2577,13 @@ def _empty_iterative_peel_diagnostics() -> dict[str, Any]:
         "rollback_banned_token_count": 0,
         "rollback_banned_tokens_by_position": {},
         "rollback_max_per_position_hits": 0,
+        "rollback_adaptive_enabled": False,
+        "rollback_total_steps_used": 0,
+        "rollback_base_steps": 0,
         "rollback_extra_steps_used": 0,
+        "rollback_stopped_reason": "",
+        "rollback_final_zero_masks": False,
+        "rollback_final_parity_clean": "",
         "rollback_remaining_masks_after_budget": 0,
         "rollback_provenance_invalidated_count": 0,
         "rollback_no_progress_stop": False,

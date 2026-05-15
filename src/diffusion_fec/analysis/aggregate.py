@@ -95,6 +95,8 @@ NUMERIC_MEAN_FIELDS = (
     "rollback_multi_suspect_count",
     "rollback_banned_token_count",
     "rollback_max_per_position_hits",
+    "rollback_total_steps_used",
+    "rollback_base_steps",
     "rollback_extra_steps_used",
     "rollback_remaining_masks_after_budget",
     "rollback_provenance_invalidated_count",
@@ -114,6 +116,10 @@ NUMERIC_MEAN_FIELDS = (
 BOOLEAN_RATE_FIELDS = (
     "exact_match",
     "known_position_preserved",
+    "rollback_adaptive_enabled",
+    "rollback_final_zero_masks",
+    "rollback_final_parity_clean",
+    "rollback_no_progress_stop",
 )
 
 

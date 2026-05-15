@@ -296,6 +296,14 @@ Rows also include `iterative_peel_*` diagnostics for the cooperative parity
 repair path. Rollback runs additionally include `rollback_*` diagnostics for
 conflict events, rolled-back positions, banned tokens, provenance invalidations,
 extra repair rounds, and masks left after the rollback budget.
+The rollback scheduler now supports adaptive repair rounds for
+`iterative_rollback`. The legacy fixed budget remains the default unless
+`rollback_continue_until_stable` is enabled. Adaptive mode treats
+`rollback_max_total_steps` as the hard safety cap, recomputes the commit schedule
+from the current masks after each rollback, and reports
+`rollback_total_steps_used`, `rollback_stopped_reason`,
+`rollback_final_zero_masks`, and `rollback_final_parity_clean` so validation can
+separate a bad rollback policy from a short repair allowance.
 
 Sparse hybrid runs after the diagnostic slice also include timing and candidate
 filter diagnostics. `model_forward_time_sec` measures LLaDA forward time;

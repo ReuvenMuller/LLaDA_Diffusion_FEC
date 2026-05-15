@@ -42,6 +42,12 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
             "rollback_event_count": "2",
             "rollback_positions_count": "1",
             "rollback_banned_token_count": "1",
+            "rollback_adaptive_enabled": "True",
+            "rollback_total_steps_used": "9",
+            "rollback_extra_steps_used": "1",
+            "rollback_final_zero_masks": "True",
+            "rollback_final_parity_clean": "True",
+            "rollback_no_progress_stop": "False",
             "rollback_provenance_invalidated_count": "0",
             "parity_filter_required_token_checks": "3",
             "parity_filter_full_scan_count": "0",
@@ -81,6 +87,12 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
             "rollback_event_count": "4",
             "rollback_positions_count": "3",
             "rollback_banned_token_count": "1",
+            "rollback_adaptive_enabled": "True",
+            "rollback_total_steps_used": "11",
+            "rollback_extra_steps_used": "3",
+            "rollback_final_zero_masks": "False",
+            "rollback_final_parity_clean": "False",
+            "rollback_no_progress_stop": "True",
             "rollback_provenance_invalidated_count": "2",
             "parity_filter_required_token_checks": "5",
             "parity_filter_full_scan_count": "0",
@@ -120,6 +132,8 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
     assert row["mean_rollback_event_count"] == 3.0
     assert row["mean_rollback_positions_count"] == 2.0
     assert row["mean_rollback_banned_token_count"] == 1.0
+    assert row["mean_rollback_total_steps_used"] == 10.0
+    assert row["mean_rollback_extra_steps_used"] == 2.0
     assert row["mean_rollback_provenance_invalidated_count"] == 1.0
     assert row["mean_parity_filter_required_token_checks"] == 4.0
     assert row["mean_parity_filter_full_scan_count"] == 0.0
@@ -127,6 +141,10 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
     assert row["mean_parity_filter_time_sec"] == 0.5
     assert row["exact_match_rate"] == 0.5
     assert row["known_position_preserved_rate"] == 1.0
+    assert row["rollback_adaptive_enabled_rate"] == 1.0
+    assert row["rollback_final_zero_masks_rate"] == 0.5
+    assert row["rollback_final_parity_clean_rate"] == 0.5
+    assert row["rollback_no_progress_stop_rate"] == 0.5
 
 
 def test_load_and_write_aggregate_csv(tmp_path) -> None:

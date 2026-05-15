@@ -398,6 +398,21 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_ROLLBACK_STOP_AFTER_NO_PROGRESS,
     )
     parser.add_argument(
+        "--rollback-continue-until-stable",
+        default="off",
+        choices=["on", "off"],
+    )
+    parser.add_argument(
+        "--rollback-require-zero-masks",
+        default="off",
+        choices=["on", "off"],
+    )
+    parser.add_argument(
+        "--rollback-require-final-parity-clean",
+        default="off",
+        choices=["on", "off"],
+    )
+    parser.add_argument(
         "--xor-overhead-bits-per-token",
         type=float,
         default=DEFAULT_XOR_OVERHEAD_BITS_PER_TOKEN,
@@ -692,6 +707,9 @@ def main(argv: list[str] | None = None) -> int:
             rollback_max_total_steps=args.rollback_max_total_steps,
             rollback_max_per_position=args.rollback_max_per_position,
             rollback_stop_after_no_progress=args.rollback_stop_after_no_progress,
+            rollback_continue_until_stable=args.rollback_continue_until_stable == "on",
+            rollback_require_zero_masks=args.rollback_require_zero_masks == "on",
+            rollback_require_final_parity_clean=args.rollback_require_final_parity_clean == "on",
             source_layout=_source_layout_from_args(args),
             wire_interleaving=_wire_interleaving_from_args(args),
             channel_config=_channel_config_from_args(args),
@@ -847,6 +865,9 @@ def main(argv: list[str] | None = None) -> int:
                 rollback_max_total_steps=args.rollback_max_total_steps,
                 rollback_max_per_position=args.rollback_max_per_position,
                 rollback_stop_after_no_progress=args.rollback_stop_after_no_progress,
+                rollback_continue_until_stable=args.rollback_continue_until_stable == "on",
+                rollback_require_zero_masks=args.rollback_require_zero_masks == "on",
+                rollback_require_final_parity_clean=args.rollback_require_final_parity_clean == "on",
                 local_files_only=args.llada_local_files_only,
                 allow_cpu=args.allow_cpu_real_llada,
                 hash_profile_dir=args.hash_profile_dir,

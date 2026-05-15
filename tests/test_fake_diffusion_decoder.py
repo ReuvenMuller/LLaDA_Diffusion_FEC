@@ -717,6 +717,178 @@ def test_position_specific_ban_empty_candidates_fails_clearly() -> None:
         )
 
 
+def test_adaptive_rollback_continues_past_base_steps_to_refill_masks() -> None:
+    plan = build_reconstruction_plan(total_tokens=2, received_packets=[])
+    model = StepwiseProposalModel(
+        choices_by_step={
+            (0, 0): 10,
+            (1, 1): 20,
+            (0, 2): 11,
+        },
+        default_token_id=11,
+    )
+
+    class LateRollbackHook:
+        rollback_enabled = True
+        rollback_extra_steps = 0
+        rollback_max_total_steps = 4
+        rollback_stop_after_no_progress = 0
+        rollback_continue_until_stable = True
+
+        def __call__(self, **kwargs):
+            if kwargs["step"] == 1:
+                return {
+                    "rollback_positions": (0,),
+                    "position_banned_tokens": {0: (10,)},
+                }
+            return {}
+
+        def record_decode_outcome(self, **kwargs):
+            self.outcome = dict(kwargs)
+
+    hook = LateRollbackHook()
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=32,
+            steps=2,
+            block_length=1,
+        ),
+        post_commit_hook=hook,
+    )
+
+    assert result.reconstructed_tokens == (11, 20)
+    assert result.steps == 3
+    assert result.diagnostics["rollback_adaptive_enabled"] is True
+    assert result.diagnostics["rollback_total_steps_used"] == 3
+    assert result.diagnostics["rollback_extra_steps_used"] == 1
+    assert result.diagnostics["rollback_stopped_reason"] == "stable"
+    assert result.diagnostics["rollback_final_zero_masks"] is True
+    assert hook.outcome["stopped_reason"] == "stable"
+
+
+def test_fixed_rollback_budget_can_leave_masks_when_adaptive_disabled() -> None:
+    plan = build_reconstruction_plan(total_tokens=2, received_packets=[])
+    model = StepwiseProposalModel(
+        choices_by_step={
+            (0, 0): 10,
+            (1, 1): 20,
+        },
+        default_token_id=11,
+    )
+
+    class LateRollbackHook:
+        rollback_enabled = True
+        rollback_extra_steps = 0
+        rollback_max_total_steps = 4
+        rollback_stop_after_no_progress = 0
+
+        def __call__(self, **kwargs):
+            if kwargs["step"] == 1:
+                return {"rollback_positions": (0,)}
+            return {}
+
+        def record_decode_outcome(self, **kwargs):
+            pass
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=32,
+            steps=2,
+            block_length=1,
+        ),
+        post_commit_hook=LateRollbackHook(),
+    )
+
+    assert result.reconstructed_tokens == (0, 20)
+    assert result.diagnostics["rollback_adaptive_enabled"] is False
+    assert result.diagnostics["rollback_stopped_reason"] == "fixed_step_budget"
+    assert result.diagnostics["rollback_remaining_masks_after_budget"] == 1
+
+
+def test_adaptive_rollback_stops_at_max_total_steps() -> None:
+    plan = build_reconstruction_plan(total_tokens=1, received_packets=[])
+    model = StepwiseProposalModel({(0, 0): 10, (0, 1): 11}, default_token_id=12)
+
+    class AlwaysRollbackHook:
+        rollback_enabled = True
+        rollback_extra_steps = 0
+        rollback_max_total_steps = 2
+        rollback_stop_after_no_progress = 0
+        rollback_continue_until_stable = True
+
+        def __call__(self, **kwargs):
+            return {"rollback_positions": (0,)}
+
+        def record_decode_outcome(self, **kwargs):
+            pass
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=32,
+            steps=1,
+            block_length=1,
+        ),
+        post_commit_hook=AlwaysRollbackHook(),
+    )
+
+    assert result.steps == 2
+    assert result.reconstructed_tokens == (0,)
+    assert result.diagnostics["rollback_stopped_reason"] == "max_total_steps"
+    assert result.diagnostics["rollback_remaining_masks_after_budget"] == 1
+
+
+def test_adaptive_rollback_no_progress_stop_triggers() -> None:
+    plan = build_reconstruction_plan(total_tokens=1, received_packets=[])
+    model = StepwiseProposalModel({(0, 0): 10, (0, 1): 11}, default_token_id=12)
+
+    class AlwaysRollbackHook:
+        rollback_enabled = True
+        rollback_extra_steps = 0
+        rollback_max_total_steps = 5
+        rollback_stop_after_no_progress = 1
+        rollback_continue_until_stable = True
+
+        def __call__(self, **kwargs):
+            return {"rollback_positions": (0,)}
+
+        def record_decode_outcome(self, **kwargs):
+            pass
+
+    result = decode_masked_diffusion(
+        model=model,
+        plan=plan,
+        config=DiffusionDecodingConfig(
+            mask_token_id=0,
+            eos_token_id=1,
+            pad_token_id=2,
+            vocab_size=32,
+            steps=1,
+            block_length=1,
+        ),
+        post_commit_hook=AlwaysRollbackHook(),
+    )
+
+    assert result.steps == 2
+    assert result.diagnostics["rollback_no_progress_stop"] is True
+    assert result.diagnostics["rollback_stopped_reason"] == "no_progress"
+    assert result.diagnostics["rollback_remaining_masks_after_budget"] == 1
+
+
 def test_empty_hash_bucket_falls_back_and_logs_position() -> None:
     token_hash = TokenHashMap(
         hash_bits=4,

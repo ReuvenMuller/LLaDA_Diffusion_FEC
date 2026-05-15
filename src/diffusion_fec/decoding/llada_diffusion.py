@@ -249,6 +249,31 @@ def decode_masked_diffusion(
     if masks.editable_count == 0:
         reconstructed_tokens = tuple(x[prompt_length:])
         no_edit_latency = perf_counter() - start_time
+        no_edit_rollback_enabled = bool(getattr(post_commit_hook, "rollback_enabled", False))
+        no_edit_rollback_adaptive_enabled = bool(
+            getattr(post_commit_hook, "rollback_continue_until_stable", False)
+            or getattr(post_commit_hook, "rollback_require_zero_masks", False)
+            or getattr(post_commit_hook, "rollback_require_final_parity_clean", False)
+        )
+        no_edit_final_parity_clean = _post_commit_hook_final_parity_clean(
+            post_commit_hook,
+            x=x,
+            plan=plan,
+            prompt_length=prompt_length,
+            config=config,
+        )
+        _record_post_commit_hook_decode_outcome(
+            post_commit_hook,
+            extra_steps_used=0,
+            remaining_masked_count=0,
+            no_progress_stop=False,
+            total_steps_used=0,
+            base_steps=config.steps,
+            stopped_reason="stable" if no_edit_rollback_enabled else "not_rollback",
+            final_zero_masks=True,
+            final_parity_clean=no_edit_final_parity_clean,
+        )
+        no_edit_post_commit_hook_diagnostics = _post_commit_hook_diagnostics(post_commit_hook)
         return DecodingResult(
             reconstructed_text=_decode_tokens(model, reconstructed_tokens),
             reconstructed_tokens=reconstructed_tokens,
@@ -283,6 +308,16 @@ def decode_masked_diffusion(
                 "linear_solver_time_sec": 0.0,
                 "post_commit_hook_time_sec": 0.0,
                 "rollback_time_sec": 0.0,
+                "rollback_enabled": no_edit_rollback_enabled,
+                "rollback_adaptive_enabled": no_edit_rollback_adaptive_enabled,
+                "rollback_total_steps_used": 0,
+                "rollback_base_steps": config.steps,
+                "rollback_extra_steps_used": 0,
+                "rollback_stopped_reason": "stable",
+                "rollback_final_zero_masks": True,
+                "rollback_final_parity_clean": no_edit_final_parity_clean,
+                "rollback_remaining_masks_after_budget": 0,
+                "rollback_no_progress_stop": False,
                 "total_decode_time_sec": no_edit_latency,
                 "step_diagnostics": (),
                 "post_commit_hook_available": post_commit_hook_available,
@@ -290,7 +325,7 @@ def decode_masked_diffusion(
                 "post_commit_hook_calls": 0,
                 "post_commit_fixed_positions_per_step": [],
                 "post_commit_rollback_positions_per_step": [],
-                "post_commit_hook_diagnostics": _post_commit_hook_diagnostics(post_commit_hook),
+                "post_commit_hook_diagnostics": no_edit_post_commit_hook_diagnostics,
                 "position_banned_token_count": 0,
                 "position_banned_tokens_by_position": {},
                 "editable_update_mode": config.editable_update_mode,
@@ -331,9 +366,29 @@ def decode_masked_diffusion(
         "rollback_max_total_steps",
         default=config.steps + rollback_extra_steps,
     )
+    rollback_continue_until_stable = bool(
+        getattr(post_commit_hook, "rollback_continue_until_stable", False)
+    )
+    rollback_require_zero_masks = bool(
+        getattr(post_commit_hook, "rollback_require_zero_masks", False)
+    )
+    rollback_require_final_parity_clean = bool(
+        getattr(post_commit_hook, "rollback_require_final_parity_clean", False)
+    )
+    rollback_adaptive_enabled = bool(
+        rollback_enabled
+        and (
+            rollback_continue_until_stable
+            or rollback_require_zero_masks
+            or rollback_require_final_parity_clean
+        )
+    )
     rollback_total_steps = config.steps
     if rollback_enabled:
-        rollback_total_steps = min(config.steps + rollback_extra_steps, rollback_max_total_steps)
+        if rollback_adaptive_enabled:
+            rollback_total_steps = rollback_max_total_steps
+        else:
+            rollback_total_steps = min(config.steps + rollback_extra_steps, rollback_max_total_steps)
         if rollback_total_steps < config.steps:
             rollback_total_steps = config.steps
     rollback_stop_after_no_progress = _non_negative_int_attr(
@@ -342,6 +397,8 @@ def decode_masked_diffusion(
         default=0,
     )
     rollback_no_progress_stop = False
+    rollback_stopped_reason = "not_rollback"
+    rollback_final_parity_clean: bool | None = None
 
     if config.editable_update_mode == EDITABLE_UPDATE_COMMIT_ONCE:
         no_progress_streak = 0
@@ -353,6 +410,22 @@ def decode_masked_diffusion(
                 config.mask_token_id,
             )
             if not editable_target_positions:
+                if rollback_enabled:
+                    rollback_final_parity_clean = _post_commit_hook_final_parity_clean(
+                        post_commit_hook,
+                        x=x,
+                        plan=plan,
+                        prompt_length=prompt_length,
+                        config=config,
+                    )
+                    rollback_stopped_reason = (
+                        "stable"
+                        if (
+                            not rollback_require_final_parity_clean
+                            or rollback_final_parity_clean is not False
+                        )
+                        else "final_parity_dirty"
+                    )
                 break
 
             remaining_masks_before = len(editable_target_positions)
@@ -567,7 +640,11 @@ def decode_masked_diffusion(
                 )
             )
             if rollback_enabled and step >= config.steps:
-                if still_masked_count >= len(editable_target_positions):
+                if rollback_adaptive_enabled:
+                    made_progress = bool(post_commit_stats) or still_masked_count < remaining_masks_before
+                else:
+                    made_progress = still_masked_count < len(editable_target_positions)
+                if not made_progress:
                     no_progress_streak += 1
                 else:
                     no_progress_streak = 0
@@ -576,6 +653,30 @@ def decode_masked_diffusion(
                     and no_progress_streak >= rollback_stop_after_no_progress
                 ):
                     rollback_no_progress_stop = True
+                    rollback_stopped_reason = "no_progress"
+                    break
+            if rollback_enabled and rollback_adaptive_enabled and still_masked_count == 0:
+                rollback_final_parity_clean = _post_commit_hook_final_parity_clean(
+                    post_commit_hook,
+                    x=x,
+                    plan=plan,
+                    prompt_length=prompt_length,
+                    config=config,
+                )
+                if (
+                    not hook_result.rollback_positions
+                    and (
+                        not rollback_require_final_parity_clean
+                        or rollback_final_parity_clean is not False
+                    )
+                ):
+                    rollback_stopped_reason = "stable"
+                    break
+                if (
+                    rollback_require_final_parity_clean
+                    and rollback_final_parity_clean is False
+                ):
+                    rollback_stopped_reason = "final_parity_dirty"
                     break
     else:
         editable_target_positions = _still_masked_target_positions(
@@ -749,6 +850,28 @@ def decode_masked_diffusion(
     if remaining_masked:
         if not rollback_enabled:
             raise RuntimeError(f"decoder left masked target positions unfilled: {remaining_masked}")
+    if rollback_enabled:
+        if rollback_stopped_reason == "not_rollback":
+            rollback_final_parity_clean = _post_commit_hook_final_parity_clean(
+                post_commit_hook,
+                x=x,
+                plan=plan,
+                prompt_length=prompt_length,
+                config=config,
+            )
+            if rollback_no_progress_stop:
+                rollback_stopped_reason = "no_progress"
+            elif remaining_masked:
+                rollback_stopped_reason = (
+                    "max_total_steps" if rollback_adaptive_enabled else "fixed_step_budget"
+                )
+            elif (
+                rollback_require_final_parity_clean
+                and rollback_final_parity_clean is False
+            ):
+                rollback_stopped_reason = "final_parity_dirty"
+            else:
+                rollback_stopped_reason = "stable"
     _validate_fixed_tokens_preserved(x, fixed_token_ids)
     if (
         config.editable_update_mode == EDITABLE_UPDATE_RESAMPLE_EACH_STEP
@@ -788,6 +911,11 @@ def decode_masked_diffusion(
         extra_steps_used=max(0, len(step_summaries) - config.steps),
         remaining_masked_count=len(remaining_masked),
         no_progress_stop=rollback_no_progress_stop,
+        total_steps_used=len(step_summaries),
+        base_steps=config.steps,
+        stopped_reason=rollback_stopped_reason if rollback_enabled else "not_rollback",
+        final_zero_masks=not remaining_masked,
+        final_parity_clean=rollback_final_parity_clean,
     )
     ordered_stats = tuple(stats_by_position[position] for position in range(plan.total_tokens))
     candidate_filter_diagnostics = _candidate_filter_diagnostics(candidate_filter)
@@ -846,6 +974,16 @@ def decode_masked_diffusion(
             "rollback_time_sec": float(
                 post_commit_hook_diagnostics.get("rollback_time_sec", 0.0) or 0.0
             ),
+            "rollback_enabled": rollback_enabled,
+            "rollback_adaptive_enabled": rollback_adaptive_enabled,
+            "rollback_total_steps_used": len(step_summaries),
+            "rollback_base_steps": config.steps,
+            "rollback_extra_steps_used": max(0, len(step_summaries) - config.steps),
+            "rollback_stopped_reason": rollback_stopped_reason if rollback_enabled else "not_rollback",
+            "rollback_final_zero_masks": not remaining_masked,
+            "rollback_final_parity_clean": rollback_final_parity_clean,
+            "rollback_remaining_masks_after_budget": len(remaining_masked),
+            "rollback_no_progress_stop": rollback_no_progress_stop,
             "total_decode_time_sec": total_decode_time_sec,
             "step_diagnostics": tuple(step_diagnostics),
             "post_commit_hook_available": post_commit_hook_available,
@@ -1229,14 +1367,57 @@ def _record_post_commit_hook_decode_outcome(
     extra_steps_used: int,
     remaining_masked_count: int,
     no_progress_stop: bool,
+    total_steps_used: int,
+    base_steps: int,
+    stopped_reason: str,
+    final_zero_masks: bool,
+    final_parity_clean: bool | None,
 ) -> None:
     record = getattr(post_commit_hook, "record_decode_outcome", None)
     if callable(record):
-        record(
-            extra_steps_used=extra_steps_used,
-            remaining_masked_count=remaining_masked_count,
-            no_progress_stop=no_progress_stop,
-        )
+        try:
+            record(
+                extra_steps_used=extra_steps_used,
+                remaining_masked_count=remaining_masked_count,
+                no_progress_stop=no_progress_stop,
+                total_steps_used=total_steps_used,
+                base_steps=base_steps,
+                stopped_reason=stopped_reason,
+                final_zero_masks=final_zero_masks,
+                final_parity_clean=final_parity_clean,
+            )
+        except TypeError:
+            record(
+                extra_steps_used=extra_steps_used,
+                remaining_masked_count=remaining_masked_count,
+                no_progress_stop=no_progress_stop,
+            )
+
+
+def _post_commit_hook_final_parity_clean(
+    post_commit_hook: object | None,
+    *,
+    x: Sequence[int],
+    plan: ReconstructionPlan,
+    prompt_length: int,
+    config: DiffusionDecodingConfig,
+) -> bool | None:
+    if post_commit_hook is None:
+        return None
+    checker = getattr(post_commit_hook, "is_final_parity_clean", None)
+    if checker is None:
+        checker = getattr(post_commit_hook, "final_parity_clean", None)
+    if not callable(checker):
+        return None
+    value = checker(
+        input_ids=tuple(x),
+        plan=plan,
+        prompt_length=prompt_length,
+        config=config,
+    )
+    if value is None:
+        return None
+    return bool(value)
 
 
 def _apply_post_commit_hook(
