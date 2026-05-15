@@ -736,6 +736,38 @@ with hash metadata. This points to the next method work: improve transmitted
 hash coverage and parity coverage for IID-scattered erasures, and consider
 top-k/endgame search only after candidate-set size is reduced.
 
+### Fair Burst Validation
+
+After adding `--burst-loss-rate`, the focused fair burst validation completed
+on the GPU server:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-fair-burst-20260515_212043
+```
+
+It used the frozen 10-sample LLaDA-tokenized artifact, loaded hash profiles,
+`steps=8`, `commit_once + always`, `tokens_per_packet=4`,
+`source_layout=round_robin_chunks`, `source_chunk_size=1`,
+`wire_interleaving=matrix`, `wire_interleaving_span=4`, sparse seed `7`, and
+the fair burst setting `--burst-loss-rate 0.5`. This run is still validation,
+not a final research result.
+
+| method | channel | channel recovery | edit | exact | masks | overhead | latency sec | wire loss | data loss | repair loss | source-token loss | parity violations | rollback events |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Hash8 | IID 50% | 0.7901 | 15.4 | 0.0000 | 0.0 | 0.4559 | 2.8059 | 0.5250 | 0.5250 | 0.0000 | 0.5250 |  |  |
+| Hash8 | fair burst 50% | 0.8563 | 9.2 | 0.0000 | 0.0 | 0.4559 | 2.6974 | 0.5000 | 0.5000 | 0.0000 | 0.5000 |  |  |
+| Sparse iterative peel | IID 50% | 0.8343 | 10.6 | 0.1000 | 0.0 | 0.4623 | 5.0401 | 0.4871 | 0.4500 | 0.5267 | 0.4500 | 0.8 | 0.0 |
+| Sparse iterative peel | fair burst 50% | 0.8828 | 7.5 | 0.0000 | 0.0 | 0.4623 | 6.0213 | 0.5000 | 0.5000 | 0.5000 | 0.5000 | 0.8 | 0.0 |
+| Sparse iterative rollback | IID 50% | 0.8397 | 10.2 | 0.1000 | 0.1 | 0.4623 | 5.5996 | 0.4871 | 0.4500 | 0.5267 | 0.4500 | 0.4 | 3.4 |
+| Sparse iterative rollback | fair burst 50% | 0.8766 | 7.9 | 0.0000 | 0.3 | 0.4623 | 6.3250 | 0.5000 | 0.5000 | 0.5000 | 0.5000 | 0.4 | 3.2 |
+
+Key read: the old fixed `burst_length=16` sparse rows were optimistic
+short-burst stress tests. Under fair 50% burst over data plus repair packets,
+sparse hybrid still beats hash8 on this 10-sample validation set, but by a
+smaller margin. Iterative rollback still helps IID slightly, but it underperforms
+plain iterative peel on fair burst and leaves more masks, so rollback should stay
+experimental until its budget/rollback policy is improved.
+
 The channel-loss reanalysis artifacts are written under:
 
 ```text
