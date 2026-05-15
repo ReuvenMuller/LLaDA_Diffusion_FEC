@@ -738,6 +738,40 @@ def test_sparse_hybrid_artifacts_include_sparse_and_linear_diagnostics(tmp_path)
     assert event["case"]["sparse_diagnostics"]["coverage_pass_degree"] >= 1
 
 
+def test_sparse_hybrid_fair_burst_records_actual_loss_diagnostics(tmp_path) -> None:
+    output_dir = tmp_path / "sparse_hybrid_fair_burst"
+
+    run_hybrid_xor_hash_micro_eval(
+        output_dir=output_dir,
+        sample_lengths=(8,),
+        tokens_per_packet=1,
+        vocab_size=64,
+        steps=2,
+        hybrid_mode=HYBRID_MODE_ITERATIVE_PEEL,
+        xor_code=XOR_CODE_SPARSE_FOUNTAIN,
+        sparse_xor_seed=2,
+        channel_config=PacketLossChannelConfig(
+            mode=CHANNEL_BURST,
+            burst_start_wire_id=0,
+            burst_loss_rate=0.5,
+        ),
+    )
+
+    row = read_csv(output_dir / "results.csv")[0]
+    event_case = read_jsonl(output_dir / "events.jsonl")[0]["case"]
+
+    total_packets = int(row["total_transmitted_packet_count"])
+    dropped_packets = int(row["dropped_packet_count"])
+    assert row["requested_burst_loss_rate"] == "0.5"
+    assert int(row["resolved_burst_length"]) == dropped_packets
+    assert dropped_packets == total_packets // 2
+    assert int(row["repair_packet_count"]) > 0
+    assert int(row["dropped_repair_packet_count"]) >= 0
+    assert float(row["actual_wire_packet_loss_rate"]) == dropped_packets / total_packets
+    assert "actual_source_token_loss_rate" in row
+    assert event_case["loss_diagnostics"]["total_transmitted_packet_count"] == total_packets
+
+
 def test_sparse_iterative_rollback_artifacts_include_rollback_diagnostics(tmp_path) -> None:
     output_dir = tmp_path / "sparse_rollback"
 

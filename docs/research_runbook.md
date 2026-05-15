@@ -405,8 +405,12 @@ python -m diffusion_fec.experiments.runner \
   --hybrid-mode parity_filter
 ```
 
-Use `--channel burst --burst-start-wire-id 0 --burst-length 16` for the burst
-validation counterpart. Hybrid artifacts report `xor_overhead_bits_per_token`,
+For fair burst-vs-IID comparisons, use
+`--channel burst --burst-start-wire-id 0 --burst-loss-rate 0.5`. This resolves
+the burst length after data and repair packets are encoded, so repair packets
+are included in the wire-loss denominator. The older `--burst-length N` flag is
+still supported, but it means a fixed count of `N` wire packets, not a
+percentage loss. Hybrid artifacts report `xor_overhead_bits_per_token`,
 `xor_target_overhead_ratio`, `actual_repair_token_overhead_ratio`,
 hash-metadata overhead, `total_overhead_ratio`, parity peel counts, parity/hash
 conflicts, parity candidate rejections, parity filter fallbacks, and final
@@ -432,6 +436,14 @@ LLaDA hash profiles, `steps=8`, `tokens_per_packet=4`, `seed=0`,
 `source_chunk_size=1`, `wire_interleaving=matrix`, and
 `wire_interleaving_span=4`. Both IID `loss_rate=0.5` and deterministic burst
 loss with `burst_start_wire_id=0`, `burst_length=16` were run.
+
+Important correction: this `burst_length=16` run is a short fixed-burst
+validation, not a 50% burst-loss validation. With sparse repair packets, each
+sample transmits data plus repair packets, so a fair 50% burst must drop about
+half of all transmitted wire packets. Use the newer `--burst-loss-rate 0.5`
+mode and the reported `actual_wire_packet_loss_rate`,
+`actual_data_packet_loss_rate`, `actual_repair_packet_loss_rate`, and
+`actual_source_token_loss_rate` fields for apples-to-apples comparisons.
 
 The run was reanalysed after adding `channel_lost_position_recovery_rate`.
 Corrected mean validation results are:
@@ -577,7 +589,8 @@ Use the frozen 10-sample LLaDA-tokenized artifact, loaded hash profiles,
 `steps=8`, `commit_once + always`, `tokens_per_packet=4`,
 `source_layout=round_robin_chunks`, `source_chunk_size=1`,
 `wire_interleaving=matrix`, `wire_interleaving_span=4`, and both IID
-`loss_rate=0.5` and burst `burst_start_wire_id=0`, `burst_length=16`. Use
+`loss_rate=0.5` and burst `burst_start_wire_id=0`, `--burst-loss-rate 0.5`.
+Use
 `channel_lost_position_recovery_rate` as the headline recovery metric.
 
 For rollback validation, keep the matrix focused: compare `hash8`,
@@ -646,6 +659,12 @@ cut mean parity violations roughly in half. The cost was a small increase in
 forward calls/latency and a mean `0.1` remaining mask tokens after the rollback
 budget. This is promising decoder-design validation, not a final result.
 
+The burst rows in the sparse-fountain and rollback tables above used the fixed
+short-burst setting `burst_length=16`. They remain useful stress tests for a
+localized outage, but they are not directly comparable to IID 50% loss. Fair
+burst validation should use `--burst-loss-rate 0.5` and report the actual
+packet/token loss diagnostics.
+
 ### Sparse Hybrid Diagnostics
 
 After the rollback validation, the sparse-hybrid diagnostic slice added a
@@ -705,6 +724,9 @@ latency is dominated by candidate construction, not LLaDA forward time:
 | burst | 0.9844 | 0.5 | 0.8710 | 0.2677 | 0.5442 | 0.0476 | 0.0024 | 0.0006 | 0.0001 | 7883.0 | 8035.4 | 0.0 |
 
 The parity-filter shortcut worked as intended: `full scans` stayed at `0.0`.
+The burst row here is also the historical fixed short-burst condition, not a
+50% burst-loss condition. Re-run with `--burst-loss-rate 0.5` before comparing
+burst directly against IID 50%.
 The remaining IID latency is therefore mostly from scoring/selecting over very
 large candidate sets. The error taxonomy also shows that most IID wrong tokens
 are not parity-constrained by surviving equations: 69 of 102 wrong IID

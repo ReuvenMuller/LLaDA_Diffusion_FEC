@@ -8,6 +8,8 @@ from diffusion_fec.channels.packet_loss import (
     CHANNEL_RANDOM_IID,
     PacketLossChannelConfig,
     apply_packet_loss_channel,
+    resolve_burst_length,
+    resolve_packet_loss_channel_config,
 )
 from diffusion_fec.channels.random_loss import RandomLossResult, apply_random_loss
 
@@ -21,4 +23,6 @@ __all__ = [
     "apply_gilbert_elliott_loss",
     "apply_packet_loss_channel",
     "apply_random_loss",
+    "resolve_burst_length",
+    "resolve_packet_loss_channel_config",
 ]

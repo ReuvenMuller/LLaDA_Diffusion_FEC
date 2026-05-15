@@ -341,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--burst-start-wire-id", type=int, default=0)
     parser.add_argument("--burst-length", type=int)
+    parser.add_argument("--burst-loss-rate", type=float)
     parser.add_argument("--ge-good-loss-rate", type=float, default=0.0)
     parser.add_argument("--ge-bad-loss-rate", type=float, default=1.0)
     parser.add_argument("--ge-good-to-bad-rate", type=float, default=0.05)
@@ -545,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
             wire_interleavings=wire_interleavings,
             channel_modes=channel_modes,
             burst_length=1 if args.burst_length is None else args.burst_length,
+            burst_loss_rate=args.burst_loss_rate,
             ge_good_loss_rate=args.ge_good_loss_rate,
             ge_bad_loss_rate=args.ge_bad_loss_rate,
             ge_good_to_bad_rate=args.ge_good_to_bad_rate,
@@ -1006,7 +1008,12 @@ def _channel_config_from_args(args: argparse.Namespace) -> PacketLossChannelConf
             loss_rate=args.loss_rate,
             seed=args.seed,
             burst_start_wire_id=args.burst_start_wire_id,
-            burst_length=1 if args.burst_length is None else args.burst_length,
+            burst_length=(
+                args.burst_length
+                if args.burst_length is not None
+                else (None if args.burst_loss_rate is not None else 1)
+            ),
+            burst_loss_rate=args.burst_loss_rate,
         )
     if args.channel == CHANNEL_GILBERT_ELLIOTT:
         return PacketLossChannelConfig(
@@ -1150,6 +1157,11 @@ def _result_row(
         "protection_mode": protection_mode,
         "oracle_hash_metadata": False,
         "hash_bits": hash_bits,
+        "channel_mode": case.channel_config.mode,
+        "burst_start_wire_id": case.channel_config.burst_start_wire_id,
+        "burst_length": case.channel_config.burst_length,
+        "requested_burst_loss_rate": case.channel_config.burst_loss_rate,
+        "resolved_burst_length": case.channel_config.resolved_burst_length,
         "loss_rate": loss_rate,
         "seed": case_seed,
         "tokens_per_packet": tokens_per_packet,
@@ -1160,6 +1172,7 @@ def _result_row(
         "unguided_count": plan.unguided_count,
         "received_packet_count": len(case.loss_result.received),
         "dropped_packet_count": len(case.loss_result.dropped),
+        **case.loss_diagnostics,
         "model_forward_calls": diagnostics.get("model_forward_calls", ""),
         "model_proposal_calls": diagnostics.get("model_proposal_calls", ""),
         "decoder_proposal_mode": diagnostics.get("decoder_proposal_mode", ""),

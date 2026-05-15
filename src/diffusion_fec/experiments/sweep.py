@@ -143,6 +143,7 @@ def build_synthetic_sweep_config(
     wire_interleavings: Sequence[WireInterleavingConfig] | None = None,
     channel_modes: Sequence[str] = (CHANNEL_RANDOM_IID,),
     burst_length: int = 2,
+    burst_loss_rate: float | None = None,
     ge_good_loss_rate: float = 0.0,
     ge_bad_loss_rate: float = 1.0,
     ge_good_to_bad_rate: float = 0.05,
@@ -166,6 +167,7 @@ def build_synthetic_sweep_config(
                             loss_rate=loss_rate,
                             seed=seed,
                             burst_length=burst_length,
+                            burst_loss_rate=burst_loss_rate,
                             ge_good_loss_rate=ge_good_loss_rate,
                             ge_bad_loss_rate=ge_bad_loss_rate,
                             ge_good_to_bad_rate=ge_good_to_bad_rate,
@@ -420,6 +422,7 @@ def _channel_config(
     loss_rate: float,
     seed: int,
     burst_length: int,
+    burst_loss_rate: float | None,
     ge_good_loss_rate: float,
     ge_bad_loss_rate: float,
     ge_good_to_bad_rate: float,
@@ -434,7 +437,8 @@ def _channel_config(
             loss_rate=loss_rate,
             seed=seed,
             burst_start_wire_id=0,
-            burst_length=burst_length,
+            burst_length=burst_length if burst_loss_rate is None else None,
+            burst_loss_rate=burst_loss_rate,
         )
     if channel_mode == CHANNEL_GILBERT_ELLIOTT:
         return PacketLossChannelConfig(

@@ -9,6 +9,7 @@ from diffusion_fec.channels.packet_loss import (
     CHANNEL_RANDOM_IID,
     PacketLossChannelConfig,
     apply_packet_loss_channel,
+    resolve_packet_loss_channel_config,
 )
 from diffusion_fec.channels.random_loss import RandomLossResult
 from diffusion_fec.coding.packetizer import (
@@ -34,6 +35,7 @@ from diffusion_fec.metrics.token_metrics import (
     compute_token_metrics,
     TokenMetrics,
 )
+from diffusion_fec.metrics.loss_metrics import compute_packet_loss_diagnostics
 from diffusion_fec.types import DecodingResult, Packet, ReconstructionPlan, TokenSample
 
 
@@ -73,6 +75,14 @@ class SmokeRecoveryCase:
         )
 
     @property
+    def loss_diagnostics(self) -> dict[str, Any]:
+        return compute_packet_loss_diagnostics(
+            loss_result=self.loss_result,
+            source_token_count=len(self.sample.token_ids),
+            channel_lost_position_count=self.channel_lost_metrics.channel_lost_position_count,
+        )
+
+    @property
     def exact_token_match(self) -> bool:
         return self.metrics.exact_match
 
@@ -86,6 +96,7 @@ class SmokeRecoveryCase:
             "loss_result": self.loss_result.to_dict(),
             "hash_metadata": dict(self.hash_metadata),
             "channel_config": self.channel_config.to_dict(),
+            "loss_diagnostics": self.loss_diagnostics,
             "protection_mode": self.protection_mode,
             "oracle_hash_metadata": self.oracle_hash_metadata,
             "reconstruction_plan": self.reconstruction_plan.to_dict(),
@@ -135,6 +146,10 @@ def run_smoke_recovery_case(
         mode=CHANNEL_RANDOM_IID,
         loss_rate=loss_rate,
         seed=seed,
+    )
+    channel_config = resolve_packet_loss_channel_config(
+        transmitted_packets,
+        config=channel_config,
     )
     loss_result = apply_packet_loss_channel(
         transmitted_packets,

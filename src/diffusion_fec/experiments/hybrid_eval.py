@@ -42,6 +42,7 @@ from diffusion_fec.channels.packet_loss import (
     CHANNEL_RANDOM_IID,
     PacketLossChannelConfig,
     apply_packet_loss_channel,
+    resolve_packet_loss_channel_config,
 )
 from diffusion_fec.channels.random_loss import RandomLossResult
 from diffusion_fec.coding.hash_profiles import DEFAULT_HASH_MAP_MODE, load_or_build_hash_profile
@@ -97,6 +98,7 @@ from diffusion_fec.metrics.token_metrics import (
     compute_token_metrics,
     TokenMetrics,
 )
+from diffusion_fec.metrics.loss_metrics import compute_packet_loss_diagnostics
 from diffusion_fec.models.llada import LLADA_1_5_MODEL_ID, LLaDAAdapter
 from diffusion_fec.types import (
     DecodingResult,
@@ -178,12 +180,21 @@ class HybridRecoveryCase:
             channel_lost_positions=self.channel_lost_positions,
         )
 
+    @property
+    def loss_diagnostics(self) -> dict[str, Any]:
+        return compute_packet_loss_diagnostics(
+            loss_result=self.loss_result,
+            source_token_count=len(self.sample.token_ids),
+            channel_lost_position_count=self.channel_lost_metrics.channel_lost_position_count,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "sample": self.sample.to_dict(),
             "encoded": self.encoded.to_dict(),
             "transmitted_packets": [packet.to_dict() for packet in self.transmitted_packets],
             "loss_result": self.loss_result.to_dict(),
+            "loss_diagnostics": self.loss_diagnostics,
             "hash_metadata": dict(self.hash_metadata),
             "initial_peel": self.initial_peel.to_dict(),
             "final_audit": self.final_audit.to_dict(),
@@ -1105,6 +1116,10 @@ def run_hybrid_recovery_case(
         encoded=encoded,
         protected_source_packets=protected_source_packets,
     )
+    channel_config = resolve_packet_loss_channel_config(
+        transmitted_packets,
+        config=channel_config,
+    )
     loss_result = apply_packet_loss_channel(
         transmitted_packets,
         config=channel_config,
@@ -1512,7 +1527,7 @@ def _run_hybrid_cases(
                 vocab_size=vocab_size,
                 source_layout=source_layout,
                 wire_interleaving=wire_interleaving,
-                channel_config=case_channel_config,
+                channel_config=case.channel_config,
                 hash_profile_info=hash_profile_info,
             )
         )
@@ -1588,6 +1603,8 @@ def _result_row(
         "channel_mode": channel_config.mode,
         "burst_start_wire_id": channel_config.burst_start_wire_id,
         "burst_length": channel_config.burst_length,
+        "requested_burst_loss_rate": channel_config.burst_loss_rate,
+        "resolved_burst_length": channel_config.resolved_burst_length,
         "ge_good_loss_rate": channel_config.good_loss_rate,
         "ge_bad_loss_rate": channel_config.bad_loss_rate,
         "ge_good_to_bad_rate": channel_config.good_to_bad_rate,
@@ -1604,6 +1621,7 @@ def _result_row(
         "received_packet_count": len(case.loss_result.received),
         "dropped_packet_count": len(case.loss_result.dropped),
         "source_packet_count": case.encoded.source_packet_count,
+        **case.loss_diagnostics,
         "extra_packet_count": case.encoded.extra_packet_count,
         "repair_packet_count": overhead.repair_packet_count,
         "repair_token_budget": overhead.repair_token_budget,

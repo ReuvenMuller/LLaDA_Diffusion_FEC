@@ -39,6 +39,7 @@ from diffusion_fec.channels.packet_loss import (
     CHANNEL_RANDOM_IID,
     PacketLossChannelConfig,
     apply_packet_loss_channel,
+    resolve_packet_loss_channel_config,
 )
 from diffusion_fec.coding.packetizer import SourceLayoutConfig, WireInterleavingConfig
 from diffusion_fec.experiments.logging import start_run_timer, write_run_artifacts
@@ -58,6 +59,7 @@ from diffusion_fec.metrics.token_metrics import (
     compute_token_metrics,
     TokenMetrics,
 )
+from diffusion_fec.metrics.loss_metrics import compute_packet_loss_diagnostics
 from diffusion_fec.types import (
     Packet,
     ReconstructionEntry,
@@ -168,6 +170,10 @@ def run_xor_parity_micro_eval(
         )
         case_seed = seed + case_index
         case_channel_config = replace(channel_config, seed=case_seed)
+        case_channel_config = resolve_packet_loss_channel_config(
+            encoded.packets,
+            config=case_channel_config,
+        )
         loss_result = apply_packet_loss_channel(
             encoded.packets,
             config=case_channel_config,
@@ -189,6 +195,11 @@ def run_xor_parity_micro_eval(
             reconstructed_tokens=reconstructed_tokens,
             dropped_packets=loss_result.dropped,
         )
+        loss_diagnostics = compute_packet_loss_diagnostics(
+            loss_result=loss_result,
+            source_token_count=len(sample.token_ids),
+            channel_lost_position_count=channel_metrics.channel_lost_position_count,
+        )
         case_id = f"case{case_index:04d}"
         result_rows.append(
             _result_row(
@@ -205,6 +216,7 @@ def run_xor_parity_micro_eval(
                 channel_metrics=channel_metrics,
                 received_packet_count=len(loss_result.received),
                 dropped_packet_count=len(loss_result.dropped),
+                loss_diagnostics=loss_diagnostics,
                 source_layout=source_layout,
                 wire_interleaving=wire_interleaving,
                 channel_config=case_channel_config,
@@ -225,6 +237,7 @@ def run_xor_parity_micro_eval(
                 "sample": sample.to_dict(),
                 "encoded": encoded.to_dict(),
                 "loss_result": loss_result.to_dict(),
+                "loss_diagnostics": loss_diagnostics,
                 "reconstruction_plan": plan.to_dict(),
                 "reconstructed_tokens": list(reconstructed_tokens),
                 "channel_lost_positions": list(channel_lost_positions),
@@ -349,6 +362,10 @@ def run_sparse_fountain_xor_micro_eval(
         )
         case_seed = seed + case_index
         case_channel_config = replace(channel_config, seed=case_seed)
+        case_channel_config = resolve_packet_loss_channel_config(
+            encoded.packets,
+            config=case_channel_config,
+        )
         loss_result = apply_packet_loss_channel(
             encoded.packets,
             config=case_channel_config,
@@ -385,6 +402,11 @@ def run_sparse_fountain_xor_micro_eval(
             reconstructed_tokens=reconstructed_tokens,
             dropped_packets=loss_result.dropped,
         )
+        loss_diagnostics = compute_packet_loss_diagnostics(
+            loss_result=loss_result,
+            source_token_count=len(sample.token_ids),
+            channel_lost_position_count=channel_metrics.channel_lost_position_count,
+        )
         case_id = f"case{case_index:04d}"
         result_rows.append(
             {
@@ -402,6 +424,7 @@ def run_sparse_fountain_xor_micro_eval(
                     channel_metrics=channel_metrics,
                     received_packet_count=len(loss_result.received),
                     dropped_packet_count=len(loss_result.dropped),
+                    loss_diagnostics=loss_diagnostics,
                     source_layout=source_layout,
                     wire_interleaving=wire_interleaving,
                     channel_config=case_channel_config,
@@ -433,6 +456,7 @@ def run_sparse_fountain_xor_micro_eval(
                 "sample": sample.to_dict(),
                 "encoded": encoded.to_dict(),
                 "loss_result": loss_result.to_dict(),
+                "loss_diagnostics": loss_diagnostics,
                 "solve_result": solve_result.to_dict(),
                 "reconstruction_plan": plan.to_dict(),
                 "reconstructed_tokens": list(reconstructed_tokens),
@@ -549,6 +573,10 @@ def run_lt_fountain_micro_eval(
         )
         case_seed = seed + case_index
         case_channel_config = replace(channel_config, seed=case_seed)
+        case_channel_config = resolve_packet_loss_channel_config(
+            encoded.packets,
+            config=case_channel_config,
+        )
         loss_result = apply_packet_loss_channel(
             encoded.packets,
             config=case_channel_config,
@@ -570,6 +598,11 @@ def run_lt_fountain_micro_eval(
             reconstructed_tokens=reconstructed_tokens,
             dropped_packets=loss_result.dropped,
         )
+        loss_diagnostics = compute_packet_loss_diagnostics(
+            loss_result=loss_result,
+            source_token_count=len(sample.token_ids),
+            channel_lost_position_count=channel_metrics.channel_lost_position_count,
+        )
         case_id = f"case{case_index:04d}"
         result_rows.append(
             _result_row(
@@ -586,6 +619,7 @@ def run_lt_fountain_micro_eval(
                 channel_metrics=channel_metrics,
                 received_packet_count=len(loss_result.received),
                 dropped_packet_count=len(loss_result.dropped),
+                loss_diagnostics=loss_diagnostics,
                 source_layout=source_layout,
                 wire_interleaving=wire_interleaving,
                 channel_config=case_channel_config,
@@ -606,6 +640,7 @@ def run_lt_fountain_micro_eval(
                 "sample": sample.to_dict(),
                 "encoded": encoded.to_dict(),
                 "loss_result": loss_result.to_dict(),
+                "loss_diagnostics": loss_diagnostics,
                 "reconstruction_plan": plan.to_dict(),
                 "reconstructed_tokens": list(reconstructed_tokens),
                 "channel_lost_positions": list(channel_lost_positions),
@@ -719,6 +754,10 @@ def run_streaming_window_micro_eval(
         )
         case_seed = seed + case_index
         case_channel_config = replace(channel_config, seed=case_seed)
+        case_channel_config = resolve_packet_loss_channel_config(
+            encoded.packets,
+            config=case_channel_config,
+        )
         loss_result = apply_packet_loss_channel(
             encoded.packets,
             config=case_channel_config,
@@ -740,6 +779,11 @@ def run_streaming_window_micro_eval(
             reconstructed_tokens=reconstructed_tokens,
             dropped_packets=loss_result.dropped,
         )
+        loss_diagnostics = compute_packet_loss_diagnostics(
+            loss_result=loss_result,
+            source_token_count=len(sample.token_ids),
+            channel_lost_position_count=channel_metrics.channel_lost_position_count,
+        )
         case_id = f"case{case_index:04d}"
         result_rows.append(
             _result_row(
@@ -756,6 +800,7 @@ def run_streaming_window_micro_eval(
                 channel_metrics=channel_metrics,
                 received_packet_count=len(loss_result.received),
                 dropped_packet_count=len(loss_result.dropped),
+                loss_diagnostics=loss_diagnostics,
                 source_layout=source_layout,
                 wire_interleaving=wire_interleaving,
                 channel_config=case_channel_config,
@@ -776,6 +821,7 @@ def run_streaming_window_micro_eval(
                 "sample": sample.to_dict(),
                 "encoded": encoded.to_dict(),
                 "loss_result": loss_result.to_dict(),
+                "loss_diagnostics": loss_diagnostics,
                 "reconstruction_plan": plan.to_dict(),
                 "reconstructed_tokens": list(reconstructed_tokens),
                 "channel_lost_positions": list(channel_lost_positions),
@@ -1290,6 +1336,7 @@ def _result_row(
     channel_metrics: ChannelLostPositionMetrics,
     received_packet_count: int,
     dropped_packet_count: int,
+    loss_diagnostics: Mapping[str, Any],
     source_layout: SourceLayoutConfig,
     wire_interleaving: WireInterleavingConfig,
     channel_config: PacketLossChannelConfig,
@@ -1317,6 +1364,8 @@ def _result_row(
         "channel_mode": channel_config.mode,
         "burst_start_wire_id": channel_config.burst_start_wire_id,
         "burst_length": channel_config.burst_length,
+        "requested_burst_loss_rate": channel_config.burst_loss_rate,
+        "resolved_burst_length": channel_config.resolved_burst_length,
         "ge_good_loss_rate": channel_config.good_loss_rate,
         "ge_bad_loss_rate": channel_config.bad_loss_rate,
         "ge_good_to_bad_rate": channel_config.good_to_bad_rate,
@@ -1333,6 +1382,7 @@ def _result_row(
         "received_packet_count": received_packet_count,
         "dropped_packet_count": dropped_packet_count,
         "source_packet_count": encoded.source_packet_count,
+        **dict(loss_diagnostics),
         "extra_packet_count": encoded.extra_packet_count,
         "repair_packet_count": overhead.repair_packet_count,
         "repair_token_budget": overhead.repair_token_budget,

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from math import floor
 from typing import Any
 
 from diffusion_fec.channels.burst_loss import apply_burst_loss
@@ -30,6 +31,8 @@ class PacketLossChannelConfig:
     seed: int | None = None
     burst_start_wire_id: int = 0
     burst_length: int | None = None
+    burst_loss_rate: float | None = None
+    resolved_burst_length: int | None = None
     good_loss_rate: float = 0.0
     bad_loss_rate: float = 1.0
     good_to_bad_rate: float = 0.05
@@ -57,6 +60,13 @@ class PacketLossChannelConfig:
                 raise TypeError("burst_length must be an int when set")
             if self.burst_length < 0:
                 raise ValueError("burst_length must be non-negative")
+        if self.burst_loss_rate is not None:
+            _validate_rate(self.burst_loss_rate, "burst_loss_rate")
+        if self.resolved_burst_length is not None:
+            if not isinstance(self.resolved_burst_length, int):
+                raise TypeError("resolved_burst_length must be an int when set")
+            if self.resolved_burst_length < 0:
+                raise ValueError("resolved_burst_length must be non-negative")
         _validate_rate(self.good_loss_rate, "good_loss_rate")
         _validate_rate(self.bad_loss_rate, "bad_loss_rate")
         _validate_rate(self.good_to_bad_rate, "good_to_bad_rate")
@@ -71,6 +81,8 @@ class PacketLossChannelConfig:
             "seed": self.seed,
             "burst_start_wire_id": self.burst_start_wire_id,
             "burst_length": self.burst_length,
+            "burst_loss_rate": self.burst_loss_rate,
+            "resolved_burst_length": self.resolved_burst_length,
             "good_loss_rate": self.good_loss_rate,
             "bad_loss_rate": self.bad_loss_rate,
             "good_to_bad_rate": self.good_to_bad_rate,
@@ -86,6 +98,7 @@ def apply_packet_loss_channel(
 ) -> RandomLossResult:
     """Apply the configured packet-erasure channel."""
 
+    config = resolve_packet_loss_channel_config(packets, config=config)
     if config.mode == CHANNEL_RANDOM_IID:
         return apply_random_loss(
             packets,
@@ -109,6 +122,50 @@ def apply_packet_loss_channel(
         seed=config.seed,
         initial_state=config.initial_state,
     )
+
+
+def resolve_packet_loss_channel_config(
+    packets: Sequence[Packet],
+    *,
+    config: PacketLossChannelConfig,
+) -> PacketLossChannelConfig:
+    """Resolve packet-count-dependent channel settings without mutating config."""
+
+    if config.mode != CHANNEL_BURST:
+        return config
+    if config.burst_loss_rate is not None:
+        resolved_length = resolve_burst_length(
+            total_transmitted_packet_count=len(packets),
+            burst_loss_rate=config.burst_loss_rate,
+        )
+        return replace(
+            config,
+            burst_length=resolved_length,
+            resolved_burst_length=resolved_length,
+        )
+    if config.burst_length is not None:
+        return replace(config, resolved_burst_length=config.burst_length)
+    return config
+
+
+def resolve_burst_length(
+    *,
+    total_transmitted_packet_count: int,
+    burst_loss_rate: float,
+) -> int:
+    """Resolve a fractional burst request into a fixed packet count.
+
+    The resolution uses floor so the channel never silently exceeds the requested
+    fraction. The resulting fixed count is still capped by the packet stream.
+    """
+
+    if not isinstance(total_transmitted_packet_count, int):
+        raise TypeError("total_transmitted_packet_count must be an int")
+    if total_transmitted_packet_count < 0:
+        raise ValueError("total_transmitted_packet_count must be non-negative")
+    _validate_rate(burst_loss_rate, "burst_loss_rate")
+    resolved = floor(total_transmitted_packet_count * float(burst_loss_rate))
+    return max(0, min(total_transmitted_packet_count, resolved))
 
 
 def _validate_rate(value: float, name: str) -> None:

@@ -20,6 +20,10 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
             "channel_lost_position_recovery_rate": "0.75",
             "channel_lost_position_count": "4",
             "channel_lost_position_recovered_count": "3",
+            "actual_wire_packet_loss_rate": "0.5",
+            "actual_data_packet_loss_rate": "0.4",
+            "actual_repair_packet_loss_rate": "0.6",
+            "actual_source_token_loss_rate": "0.25",
             "decode_latency_sec": "2.0",
             "total_decode_time_sec": "2.1",
             "model_forward_time_sec": "1.0",
@@ -55,6 +59,10 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
             "channel_lost_position_recovery_rate": "0.25",
             "channel_lost_position_count": "4",
             "channel_lost_position_recovered_count": "1",
+            "actual_wire_packet_loss_rate": "0.25",
+            "actual_data_packet_loss_rate": "0.2",
+            "actual_repair_packet_loss_rate": "0.3",
+            "actual_source_token_loss_rate": "0.5",
             "decode_latency_sec": "4.0",
             "total_decode_time_sec": "4.1",
             "model_forward_time_sec": "2.0",
@@ -91,6 +99,10 @@ def test_aggregate_result_rows_groups_and_averages_metrics() -> None:
     assert row["mean_channel_lost_position_recovery_rate"] == 0.5
     assert row["mean_channel_lost_position_count"] == 4.0
     assert row["mean_channel_lost_position_recovered_count"] == 2.0
+    assert row["mean_actual_wire_packet_loss_rate"] == 0.375
+    assert row["mean_actual_data_packet_loss_rate"] == 0.30000000000000004
+    assert row["mean_actual_repair_packet_loss_rate"] == 0.44999999999999996
+    assert row["mean_actual_source_token_loss_rate"] == 0.375
     assert row["mean_decode_latency_sec"] == 3.0
     assert row["mean_total_decode_time_sec"] == 3.0999999999999996
     assert row["mean_model_forward_time_sec"] == 1.5

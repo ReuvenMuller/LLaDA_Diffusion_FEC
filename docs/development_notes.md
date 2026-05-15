@@ -164,6 +164,21 @@ python -m diffusion_fec.experiments.runner `
   --burst-length 2
 ```
 
+`--burst-length` is a fixed wire-packet count. For fair percentage-style burst
+validation after repair packets are added, use `--burst-loss-rate`; the runner
+resolves the actual burst length after encoding data plus repair packets:
+
+```powershell
+python -m diffusion_fec.experiments.runner `
+  --output-dir runs\fake_micro_eval_fair_burst `
+  --micro-eval `
+  --sample-lengths 8 `
+  --tokens-per-packet 1 `
+  --channel burst `
+  --burst-start-wire-id 0 `
+  --burst-loss-rate 0.5
+```
+
 ```powershell
 python -m diffusion_fec.experiments.runner `
   --output-dir runs\fake_micro_eval_ge `
