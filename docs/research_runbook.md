@@ -790,6 +790,35 @@ fixed `rollback_extra_steps` budget, so rollback is judged on whether it can
 repair the positions it intentionally reopens rather than on an exhausted short
 repair allowance.
 
+Adaptive rollback zero-mask validation then ran on the GPU server:
+
+```text
+/mnt/bst/a100/yxie2/rmuller7/llada-diffusion-fec-runs/dataset-validation-adaptive-rollback-20260516_024128
+```
+
+This used the same frozen 10-sample artifact, loaded hash profiles, interleaved
+geometry, `steps=8`, and fair burst definition as above. The rollback cell used
+`--rollback-continue-until-stable on`, `--rollback-require-zero-masks on`, and
+`--rollback-max-total-steps 24`; `--rollback-require-final-parity-clean` was
+left off for interpretability.
+
+| method | channel | channel recovery | edit | exact | masks | overhead | latency sec | forwards | wire loss | data loss | repair loss | source-token loss | parity violations | rollback events | rollback steps | rollback extra | zero-mask rate | no-progress rate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Hash8 | IID 50% | 0.7901 | 15.4 | 0.0000 | 0.0 | 0.4559 | 2.8410 | 8.0 | 0.5250 | 0.5250 | 0.0000 | 0.5250 |  |  |  |  |  |  |
+| Hash8 | fair burst 50% | 0.8563 | 9.2 | 0.0000 | 0.0 | 0.4559 | 2.6620 | 8.0 | 0.5000 | 0.5000 | 0.0000 | 0.5000 |  |  |  |  |  |  |
+| Sparse iterative peel | IID 50% | 0.8343 | 10.6 | 0.1000 | 0.0 | 0.4623 | 5.0886 | 8.0 | 0.4871 | 0.4500 | 0.5267 | 0.4500 | 0.8 | 0.0 | 8.0 | 0.0 | 1.0000 | 0.0000 |
+| Sparse iterative peel | fair burst 50% | 0.8828 | 7.5 | 0.0000 | 0.0 | 0.4623 | 6.0637 | 8.0 | 0.5000 | 0.5000 | 0.5000 | 0.5000 | 0.8 | 0.0 | 8.0 | 0.0 | 1.0000 | 0.0000 |
+| Sparse adaptive rollback | IID 50% | 0.8397 | 10.2 | 0.1000 | 0.0 | 0.4623 | 5.4849 | 10.2 | 0.4871 | 0.4500 | 0.5267 | 0.4500 | 0.4 | 4.7 | 10.2 | 2.2 | 1.0000 | 0.0000 |
+| Sparse adaptive rollback | fair burst 50% | 0.8766 | 7.9 | 0.0000 | 0.3 | 0.4623 | 6.4807 | 10.8 | 0.5000 | 0.5000 | 0.5000 | 0.5000 | 0.4 | 3.7 | 10.8 | 2.8 | 0.7000 | 0.3000 |
+
+Stop reasons: adaptive IID was stable for all 10 samples. Adaptive fair burst
+was stable for 7 samples and stopped by no-progress for 3 samples. The key read
+is that adaptive repair removes the leftover-mask penalty for IID without
+changing the mean recovery/edit outcome much, while fair burst failures are not
+just a short fixed-budget issue. In burst, rollback is still reopening positions
+that it cannot make progress on under the current sparse parity/layout and
+single-token retry policy.
+
 The channel-loss reanalysis artifacts are written under:
 
 ```text
